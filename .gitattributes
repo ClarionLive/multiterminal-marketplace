@@ -1,0 +1,2 @@
+# Native modules must be stored verbatim — never apply EOL/text conversion (issue #7).
+*.node binary

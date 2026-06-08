@@ -1,0 +1,20 @@
+{
+  "name": "multiterminal",
+  "description": "Multi-agent coordination system for Claude Code. Hooks, skills, and agents for kanban task management, review pipelines, team orchestration, and session lifecycle.",
+  "version": "1.0.0",
+  "author": {
+    "name": "ClarionLive",
+    "email": "noreply@multiterminal.dev"
+  },
+  "mcpServers": {
+    "multiterminal-channel": {
+      "command": "node",
+      "args": ["${CLAUDE_PLUGIN_ROOT}/server/multiterminal-channel.mjs"]
+    }
+  },
+  "channels": [
+    {
+      "server": "multiterminal-channel"
+    }
+  ]
+}

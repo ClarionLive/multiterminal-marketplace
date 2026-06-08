@@ -1,0 +1,8 @@
+node_modules/
+*.log
+.DS_Store
+
+# Exception: bundle the better-sqlite3 native module with the plugin (issue #7).
+# Hooks resolve it from here on clean installs instead of a hardcoded dev path.
+!plugins/multiterminal/vendor/node_modules/
+!plugins/multiterminal/vendor/node_modules/**

@@ -1,0 +1,354 @@
+{
+  "skill": "project-management",
+  "version": "5.0.0",
+  "test_cases": [
+    {
+      "name": "trigger-slash-command",
+      "category": "trigger",
+      "priority": "P0",
+      "prompt": "/project-management",
+      "should_trigger": true,
+      "description": "Exact slash command invocation",
+      "assertions": [
+        "Skill activates and presents the Quick Start routing question",
+        "list_terminals is called to discover terminal identity"
+      ]
+    },
+    {
+      "name": "trigger-session-start",
+      "category": "trigger",
+      "priority": "P0",
+      "prompt": "initializing...",
+      "should_trigger": true,
+      "description": "Session hook auto-trigger — the system-reminder directive tells the agent to run /project-management",
+      "assertions": [
+        "Skill activates via session hook directive",
+        "Quick Start routing question presented without loading the full board first"
+      ]
+    },
+    {
+      "name": "trigger-pick-up-work",
+      "category": "trigger",
+      "priority": "P0",
+      "prompt": "ok I just sat down, let me see what's on the board — I think there was a settings dialog task I was working on yesterday",
+      "should_trigger": true,
+      "description": "Natural language request to resume work from a previous session",
+      "assertions": [
+        "Skill activates and routes toward the task dashboard",
+        "Does not launch into research or planning — user wants existing work"
+      ]
+    },
+    {
+      "name": "trigger-new-feature-request",
+      "category": "trigger",
+      "priority": "P0",
+      "prompt": "I want to add a notification sound when a new message arrives in the chat panel. Right now there's no audio feedback and I keep missing messages when I'm focused on another window.",
+      "should_trigger": true,
+      "description": "User describes a new feature — should trigger planning workflow",
+      "assertions": [
+        "Skill activates and gathers intent",
+        "Assesses complexity tier before diving into implementation"
+      ]
+    },
+    {
+      "name": "trigger-team-coordination",
+      "category": "trigger",
+      "priority": "P1",
+      "prompt": "I've got a big refactor coming up — need to split MessageBroker.cs into smaller service classes. Can you set up a team to handle this? Probably need 2-3 agents working in parallel.",
+      "should_trigger": true,
+      "description": "Explicit team coordination request for a LARGE task",
+      "assertions": [
+        "Skill activates and classifies as LARGE",
+        "Routes toward planning then team assembly, not immediate coding"
+      ]
+    },
+    {
+      "name": "trigger-testing-review",
+      "category": "trigger",
+      "priority": "P1",
+      "prompt": "the agents finished coding — can you present the checklist items for me to test?",
+      "should_trigger": true,
+      "description": "User wants to enter the testing phase of an active task",
+      "assertions": [
+        "Skill activates and loads the active task",
+        "Routes to Step 9 (Testing) or presents testing items"
+      ]
+    },
+    {
+      "name": "trigger-status-check",
+      "category": "trigger",
+      "priority": "P1",
+      "prompt": "what's the current state of things? I lost track of which items are done vs still coding",
+      "should_trigger": true,
+      "description": "Mid-session status check — should show dashboard",
+      "assertions": [
+        "Skill activates and displays task dashboard",
+        "Shows checklist with current statuses"
+      ]
+    },
+    {
+      "name": "trigger-resume-with-context",
+      "category": "trigger",
+      "priority": "P1",
+      "prompt": "last session we were working on the inbox panel redesign, Alice had items 0-2 and Bob had 3-5, I think Alice finished but Bob got stuck. Let's pick that up.",
+      "should_trigger": true,
+      "description": "Detailed session resume with specific context about team state",
+      "assertions": [
+        "Skill activates and loads the referenced task",
+        "Reads continuation notes to verify the user's memory of state",
+        "Offers to resume team or show current status"
+      ]
+    },
+    {
+      "name": "no-trigger-new-project",
+      "category": "trigger",
+      "priority": "P0",
+      "prompt": "I want to start a brand new Clarion COM control project called GridHelper — it'll be a custom grid widget for data entry forms",
+      "should_trigger": false,
+      "description": "New project creation should trigger /new-project, not /project-management",
+      "assertions": [
+        "Does NOT enter project-management workflow",
+        "Routes to /new-project skill instead"
+      ]
+    },
+    {
+      "name": "no-trigger-profile-update",
+      "category": "trigger",
+      "priority": "P0",
+      "prompt": "update my profile — add C# and WPF to my skills list and change my avatar to the robot emoji",
+      "should_trigger": false,
+      "description": "Profile management should trigger /profile, not /project-management",
+      "assertions": [
+        "Does NOT enter project-management workflow",
+        "Routes to /profile skill instead"
+      ]
+    },
+    {
+      "name": "no-trigger-direct-coding",
+      "category": "trigger",
+      "priority": "P0",
+      "prompt": "there's a typo on line 142 of MainForm.cs — it says 'Termnial' instead of 'Terminal', can you fix it?",
+      "should_trigger": false,
+      "description": "Trivial direct fix — no orchestration needed, just do it",
+      "assertions": [
+        "Does NOT enter full project-management workflow",
+        "Fixes the typo directly without creating a kanban ticket or spawning agents"
+      ]
+    },
+    {
+      "name": "no-trigger-architecture-question",
+      "category": "trigger",
+      "priority": "P0",
+      "prompt": "how does the MessageBroker route messages between terminals? I'm trying to understand the flow from send_message to the recipient's inbox",
+      "should_trigger": false,
+      "description": "Informational question about architecture — just answer it",
+      "assertions": [
+        "Does NOT enter project-management workflow",
+        "Answers the question directly by reading relevant code"
+      ]
+    },
+    {
+      "name": "no-trigger-direct-build",
+      "category": "trigger",
+      "priority": "P1",
+      "prompt": "build the project and tell me if there are any errors",
+      "should_trigger": false,
+      "description": "Direct build command — just run it, no PM orchestration",
+      "assertions": [
+        "Does NOT enter project-management workflow",
+        "Runs the build directly and reports results"
+      ]
+    },
+    {
+      "name": "no-trigger-messaging",
+      "category": "trigger",
+      "priority": "P1",
+      "prompt": "send a message to Alice telling her the API endpoint she asked about is in TasksController.cs line 87",
+      "should_trigger": false,
+      "description": "Direct messaging request — no PM workflow needed",
+      "assertions": [
+        "Does NOT enter project-management workflow",
+        "Sends the message directly via messaging tools"
+      ]
+    },
+    {
+      "name": "no-trigger-task-query",
+      "category": "trigger",
+      "priority": "P1",
+      "prompt": "show me the continuation notes for the settings dialog task, I want to see what was written last session",
+      "should_trigger": false,
+      "description": "Direct task data query — just fetch and display, no workflow",
+      "assertions": [
+        "Does NOT enter full project-management workflow",
+        "Fetches and displays the requested data directly"
+      ]
+    },
+    {
+      "name": "routing-just-chat",
+      "category": "routing",
+      "priority": "P0",
+      "prompt": "just chatting today — I want to brainstorm some ideas about how we could improve the activity feed. No coding, just thinking out loud.",
+      "description": "User explicitly wants chat mode — skill should drop all ceremony",
+      "assertions": [
+        "If skill triggers, routes to 'Just chat' and drops workflow",
+        "No dashboard loaded, no tasks fetched, no agents spawned",
+        "Natural conversational response about activity feed ideas"
+      ]
+    },
+    {
+      "name": "routing-work-on-task-active",
+      "category": "routing",
+      "priority": "P0",
+      "prompt": "let's work on a task",
+      "preconditions": {
+        "board_state": "1 active task with checklist (3 pending, 2 testing, 1 done), assigned to this terminal"
+      },
+      "description": "Route correctly when active task exists with mixed checklist states",
+      "assertions": [
+        "Dashboard shows the active task with checklist breakdown",
+        "Offers Resume work / Review & test / Update plan / View details",
+        "Does NOT automatically start coding without asking"
+      ]
+    },
+    {
+      "name": "routing-work-on-task-empty-board",
+      "category": "routing",
+      "priority": "P0",
+      "prompt": "let's work on a task",
+      "preconditions": {
+        "board_state": "No tasks at all (empty board)"
+      },
+      "description": "Graceful handling when board is completely empty",
+      "assertions": [
+        "Reports board is clear",
+        "Does NOT error or show broken dashboard",
+        "Offers to start something new"
+      ]
+    },
+    {
+      "name": "routing-work-paused-tasks",
+      "category": "routing",
+      "priority": "P1",
+      "prompt": "let's work on a task",
+      "preconditions": {
+        "board_state": "No active task, 2 paused tasks assigned to this terminal, 1 todo task unclaimed"
+      },
+      "description": "Correctly surfaces paused tasks alongside todo tasks",
+      "assertions": [
+        "Shows both paused and todo tasks",
+        "Paused tasks identified as resumable (not treated as new work)",
+        "User can choose which to activate"
+      ]
+    },
+    {
+      "name": "routing-start-new-small",
+      "category": "routing",
+      "priority": "P0",
+      "prompt": "the close button on the chat history dialog doesn't have a tooltip — can you add one that says 'Close'?",
+      "description": "Small task should use minimal ceremony — no full planning/team workflow",
+      "assertions": [
+        "Classified as SMALL tier",
+        "No kanban ticket created (unless user asks)",
+        "No team assembly or dedicated review agent",
+        "Either does it directly or spawns a single subagent",
+        "Build verification still happens before completion"
+      ]
+    },
+    {
+      "name": "routing-start-new-large",
+      "category": "routing",
+      "priority": "P0",
+      "prompt": "I want to add a completely new panel — a SchedulePanel that shows upcoming automated tasks, lets you create schedules, and integrates with the existing task system. It'll need a new database table, REST endpoints, MCP tools, and the WebView2 UI.",
+      "description": "Large task should trigger full ceremony with all specialist agents",
+      "assertions": [
+        "Classified as LARGE tier",
+        "Research phase runs if relevant code isn't already known",
+        "Plan created with kanban ticket",
+        "Devils Advocate reviews the plan",
+        "Test Designer generates acceptance criteria",
+        "Full team assembled with coding agents",
+        "Verifier + Security Auditor run before/during code review"
+      ]
+    },
+    {
+      "name": "workflow-abort-pivot",
+      "category": "workflow",
+      "priority": "P1",
+      "prompt": "actually forget this task, something more urgent just came up — there's a crash in the terminal spawner when you try to launch with a profile that has special characters in the name",
+      "preconditions": {
+        "state": "Mid-planning phase, team not yet spawned"
+      },
+      "description": "User aborts current work and pivots to urgent bug",
+      "assertions": [
+        "Current task left in_progress (not deleted)",
+        "Continuation notes written for the abandoned task",
+        "Pivots to the new urgent request",
+        "Assesses the bug's tier independently"
+      ]
+    },
+    {
+      "name": "workflow-abort-with-team",
+      "category": "workflow",
+      "priority": "P1",
+      "prompt": "stop everything — let's abandon this approach entirely. Shut down the agents.",
+      "preconditions": {
+        "state": "Team running, 2 coding agents active, items in various states"
+      },
+      "description": "User aborts while team is active — needs graceful shutdown",
+      "assertions": [
+        "Shutdown requests sent to all active agents",
+        "Waits for shutdown confirmations",
+        "TeamDelete called after agents confirm",
+        "Continuation notes written with abort reason and state at time of abort",
+        "Task not deleted — left in_progress for potential resumption"
+      ]
+    },
+    {
+      "name": "workflow-testing-pass",
+      "category": "workflow",
+      "priority": "P0",
+      "prompt": "pass",
+      "preconditions": {
+        "state": "Step 9 Testing — item presented for review"
+      },
+      "description": "User marks a testing item as passed",
+      "assertions": [
+        "Item moved to 'done' by the PM",
+        "Next testing item presented (if any)",
+        "If last item, completion gates checked"
+      ]
+    },
+    {
+      "name": "workflow-testing-fail",
+      "category": "workflow",
+      "priority": "P0",
+      "prompt": "fail — the button is there but clicking it doesn't actually save the settings, it just closes the dialog without persisting anything",
+      "preconditions": {
+        "state": "Step 9 Testing — item presented for review"
+      },
+      "description": "User fails a testing item with detailed feedback",
+      "assertions": [
+        "Failure notes recorded on the checklist item",
+        "Item moved back to 'coding'",
+        "For MEDIUM/LARGE: Debugger agent spawned with failure context",
+        "Failure details routed to the assigned coding agent",
+        "Remaining testing items still presented (batch mode)"
+      ]
+    },
+    {
+      "name": "workflow-session-handoff",
+      "category": "workflow",
+      "priority": "P1",
+      "prompt": "I need to go — save everything so the next session can pick up where we left off",
+      "preconditions": {
+        "state": "Mid-task, some items coding, some pending, team may or may not be running"
+      },
+      "description": "Graceful session end with comprehensive continuation notes",
+      "assertions": [
+        "Continuation notes written with: TEAM MODE marker (if applicable), phase, item states, blockers",
+        "Session Distiller spawned in background (if significant work done)",
+        "User told what's been saved and how to resume"
+      ]
+    }
+  ]
+}

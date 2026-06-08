@@ -1,0 +1,16 @@
+{
+  "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
+  "name": "multiterminal-marketplace",
+  "description": "MultiTerminal plugins for Claude Code multi-agent coordination",
+  "owner": {
+    "name": "ClarionLive"
+  },
+  "plugins": [
+    {
+      "name": "multiterminal",
+      "description": "Multi-agent coordination system for Claude Code. Hooks, skills, and agents for kanban task management, review pipelines, team orchestration, and session lifecycle.",
+      "source": "./plugins/multiterminal",
+      "category": "productivity"
+    }
+  ]
+}

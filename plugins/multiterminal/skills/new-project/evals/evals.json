@@ -1,0 +1,379 @@
+{
+  "skill": "new-project",
+  "version": "2.0.0",
+  "test_cases": [
+    {
+      "name": "trigger-slash-command",
+      "category": "trigger",
+      "priority": "P0",
+      "prompt": "/new-project",
+      "description": "Skill triggers on the exact slash command",
+      "assertions": [
+        "User sees mode selection: Create New vs Add Existing",
+        "No file writes or DB changes occur at this stage"
+      ]
+    },
+    {
+      "name": "trigger-natural-create",
+      "category": "trigger",
+      "priority": "P0",
+      "prompt": "I want to create a new project",
+      "description": "Skill triggers on natural language create request",
+      "assertions": [
+        "Skill activates and enters wizard flow",
+        "User is not treated as a generic conversation"
+      ]
+    },
+    {
+      "name": "trigger-natural-register",
+      "category": "trigger",
+      "priority": "P0",
+      "prompt": "I want to register an existing project in MultiTerminal",
+      "description": "Skill triggers on register/add existing intent",
+      "assertions": [
+        "Skill activates",
+        "Flow steers toward Add Existing path"
+      ]
+    },
+    {
+      "name": "trigger-technology-specific",
+      "category": "trigger",
+      "priority": "P0",
+      "prompt": "I want to start a new Clarion COM control",
+      "description": "Skill triggers on technology-specific project creation",
+      "assertions": [
+        "Skill activates (not treated as generic Clarion question)",
+        "Clarion COM archetype should be suggested or pre-selected"
+      ]
+    },
+    {
+      "name": "no-trigger-query",
+      "category": "trigger",
+      "priority": "P0",
+      "prompt": "What projects are registered in MultiTerminal?",
+      "description": "Skill should NOT trigger on project queries",
+      "assertions": [
+        "No wizard flow entered",
+        "Agent answers with project list or DB query"
+      ]
+    },
+    {
+      "name": "no-trigger-edit",
+      "category": "trigger",
+      "priority": "P0",
+      "prompt": "Update the deploy path for the MultiTerminal project",
+      "description": "Skill should NOT trigger on project modification",
+      "assertions": [
+        "No wizard flow entered",
+        "Agent handles as direct DB update"
+      ]
+    },
+    {
+      "name": "create-clarion-com",
+      "category": "create-new",
+      "priority": "P0",
+      "prompt": "/new-project",
+      "description": "Full Create New flow for Clarion COM with all defaults",
+      "user_responses": {
+        "mode": "Create New",
+        "name": "ClarionGrid",
+        "description": "A custom grid control for Clarion",
+        "archetype": "Clarion COM",
+        "path": "[test sandbox]\\ClarionGrid",
+        "com_class": "ClarionGridControl",
+        "clarion_version": "C11",
+        "approval": "Create it"
+      },
+      "assertions": [
+        "Directory created at specified path",
+        ".claude subfolder created",
+        ".gitignore uses clarion-com template (contains 'COM registration artifacts')",
+        ".claude/project.json has name='ClarionGrid' and agents=[Diana]",
+        "Git repo initialized on 'main' branch with initial commit",
+        "projects.json registry contains entry with matching ID",
+        "SQLite: project_type='clarion-com', icon='extension', icon_color='#4A90D9'",
+        "SQLite: project_agents has 1 row (Diana/coding)",
+        "SQLite: project_mcp_servers has 1 row (sqlite/enabled)",
+        "SQLite: project_specialist_agents has 7 rows (auto-seeded)",
+        "SQLite: project_paths has source path entry",
+        "Global MCPs NOT in project_mcp_servers"
+      ]
+    },
+    {
+      "name": "create-generic-csharp",
+      "category": "create-new",
+      "priority": "P0",
+      "prompt": "/new-project",
+      "description": "Create New flow for Generic C# class library",
+      "user_responses": {
+        "mode": "Create New",
+        "name": "MyUtilityLib",
+        "description": "Shared utility functions",
+        "archetype": "Generic C#",
+        "path": "[test sandbox]\\MyUtilityLib",
+        "dotnet_type": "class library",
+        "approval": "Create it"
+      },
+      "assertions": [
+        "SQLite: project_type='dotnet', icon='code', icon_color='#4CAF50'",
+        "build_command='dotnet build'",
+        ".gitignore uses dotnet template (contains 'TestResults/')",
+        "project_agents has Diana only",
+        "project_mcp_servers has sqlite only"
+      ]
+    },
+    {
+      "name": "create-multiterminal-feature",
+      "category": "create-new",
+      "priority": "P0",
+      "prompt": "/new-project",
+      "description": "Create New flow for MultiTerminal Feature",
+      "user_responses": {
+        "mode": "Create New",
+        "name": "SmartScheduler",
+        "description": "Automated task scheduling",
+        "archetype": "MultiTerminal Feature",
+        "feature_area": "new service",
+        "subfolder": "Services",
+        "approval": "Create it"
+      },
+      "assertions": [
+        "SQLite: project_type='multiterminal'",
+        "deploy_path set to the resolved MT Deploy directory (<DEPLOY_PATH>), not a hardcoded H:\\ path",
+        "build_command contains 'dotnet build' and 'MultiTerminal.csproj'",
+        "project_agents has 3 rows (Diana, Charlie, Bob)",
+        "project_mcp_servers has 2 rows (sqlite, mssql)",
+        "Skips git init if .git already exists"
+      ]
+    },
+    {
+      "name": "add-existing-dotnet-sln",
+      "category": "add-existing",
+      "priority": "P0",
+      "prompt": "/new-project",
+      "description": "Add Existing for .NET project with .sln file",
+      "user_responses": {
+        "mode": "Add Existing",
+        "path": "[existing .NET project with .sln]",
+        "confirm_name": "yes",
+        "archetype": "Generic C# defaults",
+        "approval": "Create it"
+      },
+      "assertions": [
+        "PROJECT_NAME extracted from .sln file",
+        "PROJECT_TYPE detected as 'dotnet'",
+        ".claude/project.json created",
+        ".gitignore NOT created if already exists",
+        "Git commit stages only .claude/ and .gitignore",
+        "Commit message says 'Register' not 'Initial commit'",
+        "SQLite has git_repo_url from discovered remote"
+      ]
+    },
+    {
+      "name": "add-existing-nodejs",
+      "category": "add-existing",
+      "priority": "P0",
+      "prompt": "/new-project",
+      "description": "Add Existing for Node.js project with package.json",
+      "user_responses": {
+        "mode": "Add Existing",
+        "path": "[existing Node.js project]"
+      },
+      "assertions": [
+        "PROJECT_NAME from package.json 'name' field",
+        "PROJECT_TYPE detected as 'node'",
+        "Archetype suggestion is 'Generic C# (with node adjustments)'"
+      ]
+    },
+    {
+      "name": "add-existing-empty-folder",
+      "category": "add-existing",
+      "priority": "P0",
+      "prompt": "/new-project",
+      "description": "Add Existing with empty folder",
+      "user_responses": {
+        "mode": "Add Existing",
+        "path": "[empty folder]"
+      },
+      "assertions": [
+        "Folder name used as fallback PROJECT_NAME",
+        "PROJECT_TYPE='unknown'",
+        "Registration still completes successfully",
+        "No errors on empty discovery"
+      ]
+    },
+    {
+      "name": "dialog-launch-case-a",
+      "category": "dialog-launch",
+      "priority": "P1",
+      "prompt": "[auto-launched from New Project dialog]",
+      "description": "Dialog launch with pre-filled data, empty folder (Case A)",
+      "assertions": [
+        "Step 0 (Mode Selection) never shown",
+        "Step 1 asks description only, not name",
+        "Step 3 skips folder path question",
+        "PROJECT_ID reused from dialog (no new GUID)",
+        "ON CONFLICT handles pre-existing SQLite record"
+      ]
+    },
+    {
+      "name": "dialog-launch-api-fail",
+      "category": "dialog-launch",
+      "priority": "P1",
+      "prompt": "[auto-launched from dialog, API down]",
+      "description": "Dialog launch but REST API unreachable",
+      "assertions": [
+        "Graceful fallback to Step 0 (normal flow)",
+        "No error shown to user",
+        "New GUID generated in Step 7"
+      ]
+    },
+    {
+      "name": "dialog-launch-case-b",
+      "category": "dialog-launch",
+      "priority": "P1",
+      "prompt": "[auto-launched from dialog, folder has .csproj and .git]",
+      "description": "Dialog launch, folder has existing project files (Case B)",
+      "assertions": [
+        "Skips to Step E2 (Add Existing auto-discovery)",
+        "Step E1 path input never shown",
+        "PROJECT_ID reused from dialog",
+        "Full auto-discovery runs normally"
+      ]
+    },
+    {
+      "name": "edge-sql-injection",
+      "category": "edge-case",
+      "priority": "P1",
+      "prompt": "/new-project",
+      "description": "Project name with apostrophe (SQL injection test)",
+      "user_responses": {
+        "name": "John's Utility Library"
+      },
+      "assertions": [
+        "SQLite INSERT succeeds (no syntax error)",
+        "Stored name is 'John's Utility Library'",
+        "All user-supplied fields escaped with '' for single quotes",
+        "project.json valid JSON with apostrophe"
+      ]
+    },
+    {
+      "name": "edge-path-not-exist",
+      "category": "edge-case",
+      "priority": "P1",
+      "prompt": "/new-project",
+      "description": "Add Existing with non-existent path",
+      "user_responses": {
+        "mode": "Add Existing",
+        "path": "H:\\NonExistent\\FakeProject"
+      },
+      "assertions": [
+        "Clear error message about missing path",
+        "Offers to retry or switch to Create New",
+        "No file/DB writes occur",
+        "User can re-enter path without restarting"
+      ]
+    },
+    {
+      "name": "edge-already-registered",
+      "category": "edge-case",
+      "priority": "P1",
+      "prompt": "/new-project",
+      "description": "Project path already registered in SQLite",
+      "assertions": [
+        "Duplicate detected via SQLite query (checks path and source_path)",
+        "User warned with existing project name and ID",
+        "Offered to update or re-register",
+        "UPSERT handles re-registration cleanly"
+      ]
+    },
+    {
+      "name": "edge-project-json-exists",
+      "category": "edge-case",
+      "priority": "P1",
+      "prompt": "/new-project",
+      "description": "Folder already has .claude/project.json",
+      "assertions": [
+        "Existing ID reused (no new GUID)",
+        "createdAt, changeLog, prompts preserved from original",
+        "New fields merged in",
+        "Updated file is valid JSON"
+      ]
+    },
+    {
+      "name": "edge-no-git",
+      "category": "edge-case",
+      "priority": "P1",
+      "prompt": "/new-project",
+      "description": "Git not installed or not on PATH",
+      "assertions": [
+        "Git failure does not block Steps 12-13",
+        "Project files and DB records created successfully",
+        "User informed git init failed",
+        "No .git directory created"
+      ]
+    },
+    {
+      "name": "error-sqlite-locked",
+      "category": "error-handling",
+      "priority": "P2",
+      "prompt": "/new-project",
+      "description": "SQLite database locked during Step 12",
+      "assertions": [
+        "Three-tier fallback: MCP tool -> sqlite3 CLI -> skip",
+        "projects.json written regardless",
+        ".claude/project.json written regardless",
+        "User informed about deferral"
+      ]
+    },
+    {
+      "name": "error-mcp-unavailable",
+      "category": "error-handling",
+      "priority": "P2",
+      "prompt": "/new-project",
+      "description": "MCP tools unavailable (GUID generator, SQLite)",
+      "assertions": [
+        "GUID via PowerShell fallback",
+        "SQLite via CLI fallback",
+        "All non-SQLite operations complete normally"
+      ]
+    },
+    {
+      "name": "error-permission-denied",
+      "category": "error-handling",
+      "priority": "P2",
+      "prompt": "/new-project",
+      "description": "Filesystem permission denied on folder creation",
+      "assertions": [
+        "Clear error about permissions",
+        "No orphan DB records for failed folder",
+        "User can retry with different path"
+      ]
+    },
+    {
+      "name": "error-start-over",
+      "category": "error-handling",
+      "priority": "P2",
+      "prompt": "/new-project",
+      "description": "User selects 'Start over' in Step 6",
+      "assertions": [
+        "Returns to Step 0 (Mode Selection)",
+        "Previous data discarded",
+        "No files or DB records from first pass",
+        "Second pass completes normally"
+      ]
+    },
+    {
+      "name": "error-refinement-loop",
+      "category": "error-handling",
+      "priority": "P2",
+      "prompt": "/new-project",
+      "description": "Multiple refinement changes before approval",
+      "assertions": [
+        "Each change reflected in re-displayed proposal",
+        "Final creation uses last refined values",
+        "DB records match refined values, not defaults"
+      ]
+    }
+  ]
+}

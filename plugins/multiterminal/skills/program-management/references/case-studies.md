@@ -1,0 +1,33 @@
+# Program Management — Case Studies
+
+Three case studies from the v2.1.139 adoption program (May 2026, tickets `910354d5` / `71c957b9` / `057ee788` / `1b310891`). Each demonstrates a principle the SKILL.md frame names. Read alongside SKILL.md; this file is purely illustrative — SKILL.md remains self-sufficient if a reader skips it.
+
+## Case 1 — Ticket `71c957b9`: R2-backup discipline before hook migrations
+
+**Setup.** Claude Code v2.1.139 added an `args: string[]` exec-form to hook command entries, fixing path-with-spaces quoting issues on Windows installs whose user profile contained a space. The ticket migrated all 36 leaf hooks in the multiterminal plugin from shell-form to exec-form. The Owner requested deferring all hook-config restart verification to a single end-of-program restart — meaning the migration's correctness could not be checked from inside the same session that made the change.
+
+**The trap.** A naïve migration would have been: edit `hooks.json`, run pipeline, ship. The pipeline's adversary gate caught the gap. The migration's contract — does v2.1.139's loader honor `args[]` AND expand `${CLAUDE_PLUGIN_ROOT}` inside argv elements? — is unverifiable from inside the affected session. Restart-deferral pushed verification to end-of-program. If the migration broke the loader contract, every hook would silently fail at the next session start — and three tickets later it would be unclear whether the `args[]` migration or some other later change had caused it.
+
+**The fix.** Before editing `hooks.json`, write a verbatim pre-migration copy as `hooks.shellform-backup.json` in the same folder. One-filename-swap rollback. Plus a three-step rollback section in the migration doc naming the exact `Move-Item` commands and a git checkout fallback against a specific commit SHA. Cost: 5 minutes; one file write.
+
+**The lesson.** Rollback discipline: when migrating something whose contract cannot be verified from inside the affected session, write a one-filename-swap rollback artifact before editing. *Defensive insurance costs nothing* — the cost really is near-zero, and the value is total isolation of "which change fired the issue" at downstream verification. This generalizes: any change batched with downstream verification (deploy, restart, merge gate) deserves a per-change rollback target. Ticket `1b310891` reused the discipline (`hooks.pre-continueOnBlock-backup.json`) even though that ticket made zero `hooks.json` edits — the principle applies even when no edit lands.
+
+## Case 2 — Ticket `057ee788`: cycleCount-miss / "fix doesn't function" defect class
+
+**Setup.** The ticket adopted the new `/goal` command for kanban-task auto-pacing. The deliverable was a design memo plus a SKILL.md subsection with a copy-paste `/goal` condition template. Run-1 pipeline surfaced 4 HIGH design findings on the v1 template. Run-2 addressed them with a comprehensive rewrite — added STOP clauses for pipeline-rebounce and cycleCount ≥ 4, expanded troubleshooting, dropped "or done" from stop set, etc.
+
+**The trap.** Run-2 looked clean — every Run-1 finding had a visible mitigation. Pipeline Run-2 still FAILed. Why? The H-D2 fix added "STOP if cycleCount ≥ 4" as a stop clause — but clause (2) of the template said "print the full checklist each turn" without specifying *which fields*. The existing checklist render format didn't include `cycleCount`. The Haiku evaluator was structurally blind to the predicate the stop clause referenced. The fix existed; the fix didn't function.
+
+**The fix.** The PM's call: Option 1.5 — fix the one finding that constituted "fix doesn't function," document the rest as Known limitations and ship. The one-line edit: extend clause (2) to require printing `<index> | status=<status> | assignedTo=<name-or-null> | cycleCount=<n> | <description>` each turn. All four fields named because all four are referenced by STOP clauses or the helper-skip directive. Self-attestation pass caught that 3 of 6 inventory rows didn't cite their outside-enforcement layer; fixed in the same pass.
+
+**The lesson.** Triage by defect class, not severity tag. The H-D2 finding wasn't "could be more elegant" — it was "the fix I approved doesn't function as written." That's a hard block. Two convergent MEDIUMs (helper-skip-invisibility from Debugger + Security gates) shared the same root and closed with the same edit. Five findings, one focused fix. The deliverable was clean after the targeted change; cycle 3's other findings landed as documented Known limitations rather than as blockers.
+
+## Case 3 — Ticket `1b310891`: doc-only over preemptive-config
+
+**Setup.** The ticket adopted v2.1.139's PostToolUse `continueOnBlock` flag — when set to `true`, a hook's block decision feeds back to Claude as feedback inside the same turn instead of killing the turn. The inventory pass revealed all 6 current PostToolUse leaves in MT exit 0 unconditionally — none block today. The (A)/(B) call was: (A) preemptively set `continueOnBlock: true` at the config level on every leaf classified "soften," encoding policy via inert flag; (B) write the policy doc only, no `hooks.json` edits, apply the flag when a real blocking hook lands.
+
+**The trap.** (A) is forward-looking and "self-evident at the config layer." Diana's initial lean was (A) — encoding intent at the config layer makes the rule self-evident. The trap: inert flags HIDE design intent inside a boolean that does nothing. A future contributor seeing `continueOnBlock: true` on a hook that exits 0 unconditionally cannot tell whether the flag is symbolic-intent-encoding or stale config. The doc is the durable artifact; the inert flag is noise.
+
+**The fix.** (B), doc-only. `CONTINUEONBLOCK-POLICY.md` with the correctness-vs-intent dichotomy crystallized: correctness blocks soften (server-side enforcement still fires); intent blocks hard-block (block expresses policy, not correctness). One-line cross-ref in `HOOKS-MIGRATION.md` connecting the two policy docs. Zero `hooks.json` edits. The R2 backup file stayed in place anyway — defensive insurance costs nothing — but for ticket `71c957b9`'s restart verification, not this ticket's rollback.
+
+**The lesson.** When the feature's value is policy not behavior, doc-only beats inert config flags. The defect class isn't "elegant" vs "ugly" — it's "design intent visible" vs "design intent hidden." (B) made the policy load-bearing where future contributors will actually look (a sibling doc next to HOOKS-MIGRATION.md), not as a flag they'd have to context-derive. As a bonus: with no `hooks.json` edits, ticket `1b310891` added zero risk to the Owner's end-of-program restart, leaving ticket `71c957b9`'s `args[]` migration as the sole verification gate. Risk-class sequencing in action.
