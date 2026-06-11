@@ -441,6 +441,38 @@ async function main() {
       dtrace('STEP 5: AUTO-RUN SKILL emitted to stdout');
       console.log('');
 
+      // Task be599e08: /clear does NOT reset the terminal, so the AUTO-RUN context above is
+      // staged but nothing acts on it until the model gets a turn. MT can't reliably see a
+      // "/clear" in the raw keystroke stream (slash-menu autocomplete, mouse-mode CSI, parser
+      // desync), but THIS hook fires deterministically on every /clear — so tell MT to inject
+      // "initializing..." into our terminal, which gives the cleared session a turn and runs
+      // /multiterminal:session-start. Awaited (so the POST flushes before the hook process
+      // exits) but never throws and never blocks startup beyond a short timeout.
+      if (hookData.source === 'clear') {
+        await new Promise((resolve) => {
+          try {
+            const http = require('http');
+            const payload = JSON.stringify({ agentName: terminalName, sessionId: sessionId, text: 'initializing...' });
+            const req = http.request({
+              hostname: 'localhost',
+              port: 5050,
+              path: '/api/terminals/inject',
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(payload) },
+              timeout: 3000
+            }, (res) => { res.on('data', () => {}); res.on('end', () => resolve()); });
+            req.on('error', () => resolve());
+            req.on('timeout', () => { req.destroy(); resolve(); });
+            req.write(payload);
+            req.end();
+            dtrace('STEP 5b: posted /api/terminals/inject (initializing...) for /clear');
+          } catch (e) {
+            dtrace('STEP 5b: inject POST failed: ' + e.message);
+            resolve();
+          }
+        });
+      }
+
       // Surface identity (esp. CLAUDE_SESSION_ID) via additionalContext. Claude Code
       // does NOT export CLAUDE_SESSION_ID into the child shell, so the session-start
       // skill's `echo "$CLAUDE_SESSION_ID"` is always empty and register_session gets
