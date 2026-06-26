@@ -158,7 +158,7 @@ pre-flight gate passes.
 ## Endpoint 404 — installed MultiTerminal build is too old
 
 **Symptom:** Step 1b prints `CONFIG_FAIL code=404` (the app answers `/health` but not
-`/api/multi-connect/config`), or `schemaVersion` is a value this skill doesn't recognize.
+`/api/multi-connect/config`), or `schemaVersion` is not exactly the string `"1.0"`.
 
 **Meaning:** The running MultiTerminal build predates the Multi-Connect REST surface (or is newer than
 this skill).
@@ -166,8 +166,31 @@ this skill).
 **Fix:**
 - 404 → the build is too old. Update MultiTerminal to a build that includes the Multi-Connect Settings
   tab, then re-run. No changes are written on a 404 — the skill stops at the gate by design.
-- Unrecognized `schemaVersion` → the app is newer than this skill. Update the marketplace plugin /
-  `multi-connect-setup` skill to a version that understands the app's schemaVersion.
+- `schemaVersion` other than `"1.0"` → the app is newer than this skill. Update the marketplace plugin
+  / `multi-connect-setup` skill to a version that understands the app's schemaVersion.
 
 This gate exists specifically so the skill never reports "setup complete" while the final POST would
 silently 404 against an old build.
+
+---
+
+## POST rejected — 400 / 403 from /api/multi-connect/config
+
+**Symptom:** Step 6 prints `POST_FAIL code=400` or `code=403`.
+
+The endpoint returns a JSON body `{"error":"<message>"}`. Surface that message verbatim — do not retry
+blindly.
+
+**400 (validation)** — common messages:
+- `gatewayPort must be an integer between 1 and 65535` — a port value is out of range or non-numeric.
+- `vapidSubject must be a mailto: address or an http(s) URL`
+- `relayBaseUrl must be an absolute http(s) URL`
+
+Note the POST contract: `gatewayPort` / `tailscaleServePort` are sent as **strings** (`"443"`),
+`tailscaleEnabled` as a **bool**; the body is **flat camelCase** (not the nested `{value,source}`
+shape the GET returns). A 400 right after a contract change usually means a field shape regressed —
+diff your POST body against the GET keys (`.value` / `.isSet`) you read in Step 1.
+
+**403** — body `{"error":"Loopback only"}` or `{"error":"Origin not allowed"}`. The endpoint is
+loopback-only; the call must originate from `127.0.0.1` on the MultiTerminal host. Run the skill
+locally on the machine running MultiTerminal, not over the tunnel.

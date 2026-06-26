@@ -23,23 +23,44 @@ and tell the user this skill currently supports Windows.
 > recorded (e.g. `& 'C:\Program Files\Tailscale\tailscale.exe' status`). Do not assume a variable set
 > in an earlier tool call is still defined.
 
-> ## REST CONTRACT — confirm field names against the running endpoint
-> The C# endpoints (`/api/multi-connect/config`, `/api/multi-connect/tailscale-status`) are owned
-> by another agent and may still be settling. This skill assumes the field names below. **Before
-> trusting them, GET the config once and inspect the actual JSON keys** (Step 1). If a key name
-> differs, adapt to what the endpoint actually returns — do not blindly POST guessed keys.
+> ## REST CONTRACT (authoritative — MultiConnectController.cs)
+> Endpoints are **loopback-only on :5050** (this skill runs locally, so fine). The GET and POST shapes
+> differ — read this carefully.
 >
-> Assumed GET `/api/multi-connect/config` response shape:
+> **GET `/api/multi-connect/config` → 200.** Non-secret fields are NESTED `{ value, source }`; secrets
+> are `{ isSet, source }` (never the raw value). `schemaVersion` is the STRING `"1.0"`. There is a
+> COMPUTED `phoneUrl` at the top level — prefer it over building the URL yourself.
 > ```json
-> { "schemaVersion": 1, "gatewayPort": 5100, "tailscaleServePort": 443,
->   "tailscaleHostname": null, "tailscaleEnabled": false }
+> {
+>   "schemaVersion": "1.0",
+>   "gatewayPort":        { "value": 5100, "source": "settings|appsettings|default" },
+>   "tailscaleEnabled":   { "value": false, "source": "..." },
+>   "tailscaleHostname":  { "value": null,  "source": "..." },
+>   "tailscaleServePort": { "value": 443,  "source": "..." },
+>   "phoneAuthUsername":  { "value": "...", "source": "..." },
+>   "phoneAuthPassword":  { "isSet": false, "source": "..." },
+>   "notificationSecret": { "isSet": false, "source": "..." },
+>   "vapidSubject":       { "value": "...", "source": "..." },
+>   "relayBaseUrl":       { "value": "...", "source": "..." },
+>   "relayApiKey":        { "isSet": false, "source": "..." },
+>   "phoneUrl": "https://<host>"   // or "https://<host>:<port>" or null (computed)
+> }
 > ```
-> Assumed POST `/api/multi-connect/config` accepts (partial update, only the keys we detected):
+> Read scalars via `.value` (e.g. `$cfg.gatewayPort.value`, `$cfg.tailscaleServePort.value`).
+>
+> **POST `/api/multi-connect/config`** — body is FLAT camelCase (NOT nested). Per-field semantics:
+> omit/null = unchanged, `""` = clear, value = set. Partial body is accepted — send only what you set.
+> `gatewayPort` and `tailscaleServePort` are STRINGS in the POST body (send `"443"`, not `443`);
+> `tailscaleEnabled` is a real bool. POST echoes back the full GET view on success.
 > ```json
-> { "tailscaleHostname": "<machine>.<tailnet>.ts.net", "tailscaleServePort": 443,
+> { "tailscaleHostname": "<machine>.<tailnet>.ts.net", "tailscaleServePort": "443",
 >   "tailscaleEnabled": true }
 > ```
-> Known schemaVersions this skill understands: **`1`**. Anything else → STOP (Step 1).
+> **Gate:** accept `schemaVersion == "1.0"` only. Any other value, or 404, → STOP (Step 1).
+>
+> The contract is authoritative, but still descend into the ACTUAL GET keys at runtime (use `.value` /
+> `.isSet`) rather than re-deriving names — minor casing drift then can't silently break the skill.
+> Surface any 400 `{"error":"..."}` / 403 `{"error":"..."}` body verbatim to the user.
 
 ---
 
@@ -99,13 +120,14 @@ Branch on the result:
   > Your installed MultiTerminal build predates the Multi-Connect endpoint (`/api/multi-connect/config`
   > returned 404 / was unreachable). Update MultiTerminal to a build that includes the Multi-Connect
   > Settings tab, then re-run this setup. No changes were made.
-- **schemaVersion NOT in {1}** → **STOP**. Tell the user this skill (v1.0.0) understands Multi-Connect
-  schemaVersion 1 but the app reports `<value>`; the skill may be older than the app. Ask them to
-  update the marketplace plugin / skill. Do not write config.
-- **CONFIG_OK with a known schemaVersion** → record these values for later and continue:
-  - `GATEWAY_PORT` = `$cfg.gatewayPort` (default **5100** if null/absent)
-  - `SERVE_PORT`   = `$cfg.tailscaleServePort` (default **443** if null/absent)
-  - Also note the actual key names present, in case they differ from the assumed contract above.
+- **schemaVersion NOT exactly `"1.0"`** → **STOP**. Tell the user this skill (v1.0.0) understands
+  Multi-Connect schemaVersion `"1.0"` but the app reports `<value>`; the skill may be older than the
+  app. Ask them to update the marketplace plugin / skill. Do not write config.
+- **CONFIG_OK with `schemaVersion == "1.0"`** → record these values for later and continue. Remember
+  the fields are NESTED — read `.value`, not the bare key:
+  - `GATEWAY_PORT` = `$cfg.gatewayPort.value` (default **5100** if null/absent)
+  - `SERVE_PORT`   = `$cfg.tailscaleServePort.value` (default **443** if null/absent)
+  - `PHONE_URL`    = `$cfg.phoneUrl` (may be null until we POST the hostname; used in Step 8)
 
 ---
 
@@ -220,42 +242,54 @@ Handle these cases:
 
 ## Step 6: Write detected values back to MultiTerminal
 
-POST the detected hostname + serve port so the app stores them (and marks Tailscale enabled). Only
-send the keys you actually detected — match the real key names you saw in Step 1.
+POST the detected hostname + serve port so the app stores them (and marks Tailscale enabled). The body
+is FLAT camelCase, send only the keys you set, and **`tailscaleServePort` must be a STRING** (`"443"`,
+not `443`); `tailscaleEnabled` is a real bool. On success the POST echoes back the full GET view —
+capture it to read the computed `phoneUrl` for Step 8.
 
 ```powershell
 $body = @{
     tailscaleHostname  = $HOSTNAME
-    tailscaleServePort = [int]$SERVE_PORT
+    tailscaleServePort = [string]$SERVE_PORT   # STRING per contract
     tailscaleEnabled   = $true
 } | ConvertTo-Json
 try {
-    Invoke-RestMethod -Uri 'http://localhost:5050/api/multi-connect/config' `
+    $resp = Invoke-RestMethod -Uri 'http://localhost:5050/api/multi-connect/config' `
         -Method Post -Body $body -ContentType 'application/json' -TimeoutSec 5
-    "POST_OK"
+    "POST_OK phoneUrl=$($resp.phoneUrl)"
 } catch {
-    $code = $null; try { $code = [int]$_.Exception.Response.StatusCode } catch {}
-    "POST_FAIL code=$code msg=$($_.Exception.Message)"
+    $code = $null; $errBody = $null
+    try { $code = [int]$_.Exception.Response.StatusCode } catch {}
+    try {
+        $sr = New-Object IO.StreamReader($_.Exception.Response.GetResponseStream())
+        $errBody = $sr.ReadToEnd()
+    } catch {}
+    "POST_FAIL code=$code body=$errBody msg=$($_.Exception.Message)"
 }
 ```
-- `POST_FAIL code=400` → the endpoint rejected the payload; print the response body and re-check the
-  field names against Step 1's GET (the contract may have changed). Do not loop blindly.
+- `POST_FAIL code=400` → endpoint rejected the payload; the response body is `{"error":"<message>"}` —
+  surface that exact message to the user (e.g. port out of range). Do not loop blindly.
+- `POST_FAIL code=403` → body `{"error":"Loopback only"}` / `{"error":"Origin not allowed"}`; the call
+  isn't coming from loopback. Make sure the skill runs locally on the MT host.
 - `POST_FAIL code=404` → contradicts Step 1; the app may have restarted into an older build. STOP.
-- `POST_OK` → continue.
+- `POST_OK` → record `phoneUrl` from the echoed response and continue.
 
 ---
 
 ## Step 7: Verify end-to-end over Tailscale
 
 Prove the phone path actually works by hitting `/health` **through the public `.ts.net` HTTPS URL**
-(not loopback). This exercises `tailscale serve` → gateway.
+(not loopback). This exercises `tailscale serve` → gateway. Use the computed `phoneUrl` from the POST
+echo (Step 6) as the base — it already encodes the right port — falling back to building it from
+`$HOSTNAME` only if `phoneUrl` is null.
 
 ```powershell
+$base = if ($PHONE_URL) { $PHONE_URL.TrimEnd('/') } else { "https://$HOSTNAME" }
 try {
-    Invoke-RestMethod -Uri "https://$HOSTNAME/health" -TimeoutSec 15 | Out-Null
-    "VERIFY_OK"
+    Invoke-RestMethod -Uri "$base/health" -TimeoutSec 15 | Out-Null
+    "VERIFY_OK base=$base"
 } catch {
-    "VERIFY_FAIL: $($_.Exception.Message)"
+    "VERIFY_FAIL base=$base: $($_.Exception.Message)"
 }
 ```
 - `VERIFY_OK` → continue to Step 8.
@@ -267,21 +301,23 @@ try {
 
 ## Step 8: Print the phone URL
 
-On success, show the user the final URL **clearly** and tell them what to do:
+On success, show the user the final URL **clearly** and tell them what to do. Use the computed
+`phoneUrl` (`$PHONE_URL`) from the Step 6 POST echo as the single source of truth — it already omits
+`:443` and includes any non-default port. Only construct the URL yourself if `phoneUrl` is null
+(`https://<HOSTNAME>/`, adding `:<SERVE_PORT>` when the serve port is not 443).
 
 ```
 ✅ Multi-Connect is set up.
 
    Open this on your phone (same Tailscale account, Tailscale app installed & connected):
 
-       https://<HOSTNAME>/
+       <PHONE_URL>
 
    You'll get the MultiTerminal login (PWA). Sign in with the phone username/password
    configured in MultiTerminal's Multi-Connect settings tab.
 ```
 
-Replace `<HOSTNAME>` with the detected value. If the serve port is **not** 443, include it:
-`https://<HOSTNAME>:<SERVE_PORT>/`.
+Replace `<PHONE_URL>` with the value from the GET/POST response.
 
 Remind the user: the phone must have the **Tailscale app installed and connected to the same
 tailnet** — the `.ts.net` URL only resolves inside Tailscale.
