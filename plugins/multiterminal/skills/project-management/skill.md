@@ -102,6 +102,13 @@ Assess task size before entering any workflow:
 
 **Do NOT load tasks or display a dashboard yet.**
 
+**Routed from /session-start? Skip this menu.** If this skill was invoked with an `args` value of the form `from-session-start:<choice>`, the user has **already** picked their intent in the session-start menu — do NOT show the AskUserQuestion below again (that double-menu is the exact duplication this pass-through removes). Instead, still call `mcp__multiterminal__list_terminals()` to discover your terminal name, then route directly:
+- `from-session-start:new-task` → **Step 3**
+- `from-session-start:work-on-task` → **Step 2**
+- any other/unrecognized routed value → fall through to the menu below.
+
+Otherwise (manual `/project-management` with no routing arg), show the menu.
+
 Call `mcp__multiterminal__list_terminals()` in parallel with the routing question to discover your terminal name.
 
 Use AskUserQuestion:

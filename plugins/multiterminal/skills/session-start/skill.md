@@ -44,7 +44,7 @@ Before anything else, you MUST identify yourself:
 **How to use the results:**
 - `get_latest_session` returns a summary. **Use this summary as your primary context** for the greeting. It's generated from the actual session messages and describes what was worked on.
 - If the summary is empty or says "No summary cached", fall back to `search_session_memory(query="what we worked on last session", projectPath=PROJECT_ROOT, topK=5, agentName=YOUR_NAME)` to get transcript chunks. Synthesize a 2-3 sentence summary from those chunks.
-- The active task is secondary context. Do NOT read `memory/ACTIVE-CONTEXT.md` — it's often stale and misleading.
+- The active task is secondary context. `memory/ACTIVE-CONTEXT.md` is a stale on-demand artifact, not session state — the recap owner is `get_latest_session` (above), so don't rely on ACTIVE-CONTEXT for what happened last session.
 - **IMPORTANT:** Do NOT just repeat the active task's continuation notes as your summary. If the session summary tells a different story than the active task, trust the session summary — the user may have been working off-task.
 
 If `get_latest_session` returns no results AND the search fallback returns nothing, just mention the active task.
@@ -113,7 +113,7 @@ Stop after presenting the AskUserQuestion. Do NOT run any other skills until the
 **IMPORTANT: Follow these routing rules EXACTLY. Do NOT call list_tasks or any other MCP tool unless specified.**
 
 - **Continue** → Immediately run `/kanban-task` using the Skill tool (`skill="kanban-task"`). Do NOT list tasks first. The kanban-task skill will auto-detect the active task and resume it.
-- **New task** → Run `/project-management` using the Skill tool (`skill="project-management"`).
+- **New task** → Run `/project-management` using the Skill tool (`skill="project-management"`, `args="from-session-start:new-task"`). Passing the routed choice tells project-management the user has **already** answered the "what do you want to do?" question here, so its Step 1 skips the duplicate menu and goes straight to new-work.
 - **Pick a task** → Call `get_my_pickable_tasks()` (do NOT use `list_tasks`). Present results as a **numbered list** so the user can type a number to select. Then run `/kanban-task`.
 - **Just chat** → Do nothing. Respond naturally to whatever they say next.
 - **Other (direct instruction)** → Just do what they asked. No skill needed.
