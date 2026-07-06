@@ -211,23 +211,7 @@ STOP the goal if ANY of these hold:
   - Any item's cycleCount reaches 4 or more — per kanban-task Step 4.8, that is an escalation gate requiring user discussion.
 ```
 
-**Token-spend note:** the 25-turn cap is on turns, not tokens. Each turn re-broadcasts the full checklist (and growing transcript) to the Haiku evaluator; for long-running tasks watch the `◎ /goal active` overlay's token-spend field and `/goal clear` early if it climbs faster than expected.
-
-**Troubleshooting** — `/goal` fails silently on multiple paths. If the loop is misbehaving:
-- **Pre-v2.1.139 Claude Code build:** the command is unrecognized; check `claude --version`. v2.1.139+ required.
-- **Workspace trust off / `disableAllHooks: true`:** the evaluator runs as a Stop hook and silently no-ops. Confirm workspace trust is accepted and `disableAllHooks` is `false` in settings.
-- **Fast-model provider outage:** the configured small fast model (Haiku by default) may be unavailable; the loop may not stop or may fall through to a larger model with elevated token cost.
-- **Oscillating no-progress loop:** agent prints checklist, evaluator says "no, keep working", agent does nothing actionable, repeat. `/goal clear` and re-issue with a smaller turn cap or sharper condition.
-- **After `--resume`:** the goal's condition carries forward but the 25-turn counter RESETS. Re-`get_task_detail` immediately on the first turn after resume so the evaluator's view of state is fresh.
-
-**Why these clauses:**
-- **G1 — Evaluator can't query SQLite.** The "print the checklist each turn" clause is what makes the condition verifiable. Without it, the evaluator sees stale state and the loop stalls.
-- **PM gate preservation.** The "do NOT mark done" clause + the explicit "ignore items already done" wording prevents an over-eager loop from calling `update_task_checklist newStatus: done` and burning turns on API rejections.
-- **Pipeline-rebounce stop.** When the last item reaches testing, the pipeline auto-triggers; if the pipeline routes items back to coding, those are quality concerns the auto-pace can't fix — keep the human in the loop.
-- **cycleCount escalation.** Step 4.8 says 4+ cycles needs user discussion. Without this stop clause the auto-pace would grind past the escalation gate silently.
-- **25-turn cap.** `/goal` has no built-in turn budget; bound it in the condition itself.
-
-**Out of scope for the loop:** the pipeline runs *after* the goal's stop condition is met (the pipeline-trigger-hook fires when all items reach testing). Don't include "run the pipeline" in the goal — let the existing hook fire it. The goal's only job is to move the checklist forward; the pipeline judges quality afterward.
+For the full rationale behind each stop clause, the token-spend/turn-cap note, the five silent-failure troubleshooting paths, and the "let the pipeline auto-fire — don't put it in the goal" guidance, see `references/goal-integration.md` in this folder. Keep the template and both ⚠️ callouts above as written — they carry the load-bearing safety clauses.
 
 ---
 
