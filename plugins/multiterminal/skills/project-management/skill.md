@@ -405,7 +405,7 @@ For each blocking failure from the pipeline:
    3. Verify the fix doesn't break anything
    4. Report what you changed
 
-   Build the project after all fixes: build_project(projectPath='[path]')"
+   Build the project after all fixes: mcp__windows-build-runner__build_project(projectPath='[path]')"
    )
    ```
 
