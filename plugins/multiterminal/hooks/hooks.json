@@ -216,6 +216,16 @@
             "timeout": 3
           }
         ]
+      },
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node",
+            "args": ["${CLAUDE_PLUGIN_ROOT}/hooks/context-threshold-hook.js", "PostToolUse"],
+            "timeout": 3
+          }
+        ]
       }
     ],
     "PostToolUseFailure": [
@@ -358,6 +368,12 @@
             "args": ["${CLAUDE_PLUGIN_ROOT}/hooks/desktop-presence-hook.js"],
             "timeout": 2,
             "async": true
+          },
+          {
+            "type": "command",
+            "command": "node",
+            "args": ["${CLAUDE_PLUGIN_ROOT}/hooks/context-threshold-hook.js", "UserPromptSubmit"],
+            "timeout": 3
           }
         ]
       }
