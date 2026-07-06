@@ -577,9 +577,13 @@ async function main() {
             // Top 5: title + first content line only (trimmed from 15 for boot size; task 78bcf274).
             // Full content is one query_knowledge call away — no need to front-load it at every boot.
             for (const entry of knowledge.slice(0, 5)) {
-              const firstLine = (entry.content || '').split(/\r?\n/)[0].substring(0, 120);
-              const truncated = (entry.content || '').length > firstLine.length ? '…' : '';
-              console.log(`**${entry.title}** (${entry.category}): ${firstLine}${truncated}`);
+              const content = (entry.content || '').replace(/^[\r\n]+/, ''); // strip leading blank lines
+              const lines = content.split(/\r?\n/);
+              const firstLine = lines[0].substring(0, 120);
+              // "…" only when there is genuinely more: first line was cut, or a later line has content
+              const hasMore = lines[0].length > 120 || lines.slice(1).some(l => l.trim());
+              const body = firstLine ? `: ${firstLine}${hasMore ? '…' : ''}` : ''; // no trailing colon when empty
+              console.log(`**${entry.title}** (${entry.category})${body}`);
             }
             console.log('_More available — use query_knowledge to search the full knowledge base by topic._');
             console.log('');
@@ -626,7 +630,9 @@ async function main() {
           // The session-start skill is the single recap owner: it calls get_latest_session
           // (with a search_session_memory fallback for the no-summary case). Emitting the
           // recap here too meant two sources for one thing and an extra boot-time REST round
-          // trip. reload-context still fetches the recap from the same owner on the /clear path.
+          // trip. On /clear the hook re-triggers session-start (via the "initializing" inject),
+          // so recap still has an owner there; reload-context covers the standalone
+          // "reload context" invocation using the same get_latest_session source.
         }
       } catch (err) {
         dtrace(`STEP-ERR: Error reading kanban/plan context: ${err.message}`);

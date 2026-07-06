@@ -104,7 +104,6 @@ Assess task size before entering any workflow:
 
 **Routed from /session-start? Skip this menu.** If this skill was invoked with an `args` value of the form `from-session-start:<choice>`, the user has **already** picked their intent in the session-start menu — do NOT show the AskUserQuestion below again (that double-menu is the exact duplication this pass-through removes). Instead, still call `mcp__multiterminal__list_terminals()` to discover your terminal name, then route directly:
 - `from-session-start:new-task` → **Step 3**
-- `from-session-start:work-on-task` → **Step 2**
 - any other/unrecognized routed value → fall through to the menu below.
 
 Otherwise (manual `/project-management` with no routing arg), show the menu.
@@ -444,7 +443,7 @@ After a successful pipeline pass, update `memory/ACTIVE-CONTEXT.md` with:
 - **Status**: Pipeline passed, ready for user testing
 - **Next Steps**: Present items to user for manual testing
 
-This ensures session continuity if the session ends unexpectedly.
+(ACTIVE-CONTEXT.md is an on-demand artifact — no longer auto-injected at session start; the durable record of work state is the task's continuation notes via `update_task_continuation`.)
 
 → **Step 9**
 
