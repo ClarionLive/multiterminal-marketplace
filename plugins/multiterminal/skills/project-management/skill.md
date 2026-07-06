@@ -243,7 +243,7 @@ Break the plan into concrete, testable items. Each should be:
 **Good:** "Add GetWidget method to TaskDatabase.cs returning Widget by ID, with null handling"
 **Bad:** "Fix the database" (too vague) or "Add null check on line 47" (too granular)
 
-Save via `update_checklist(taskId, checklistJson="[...]")`.
+Save via `append_checklist_items(taskId, itemsJson="[...]")` (a freshly-created task has an empty checklist, so appending sets it up; `update_checklist` full-replace is deprecated).
 
 **MEDIUM & LARGE:** Read `references/specialist-agents.md` and spawn the **Test Designer** to generate acceptance criteria for each item.
 
