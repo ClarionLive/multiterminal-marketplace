@@ -315,6 +315,8 @@ Use `mcp__multiterminal__update_task_continuation` with:
   - Any blockers or decisions pending
 - updatedBy: your name
 
+**Do NOT re-list changed files in the continuation notes.** File bookkeeping already has two homes: the human-readable `FILES CHANGED` block in the completion report (Step 4.2) and the structured `link_task_file` entries (Step 4.3, queryable via `get_task_files`). If you need to reference files in the notes, point to those (e.g. "files: see linked task files") rather than pasting a third copy — two sources of truth, not three.
+
 Tell the user:
 ```
 Item [index] "[description]" moved to TESTING.
