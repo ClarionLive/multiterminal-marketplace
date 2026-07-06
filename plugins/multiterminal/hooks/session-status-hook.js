@@ -512,27 +512,13 @@ async function main() {
         // Non-critical — never block startup
       }
 
-      // Inject ACTIVE-CONTEXT.md for session continuity
-      try {
-        // Derive the per-project memory folder name (project path with ':' '\' '/' → '-')
-        // from CLAUDE_PROJECT_DIR (else cwd) instead of hardcoding it, so this shipped hook
-        // reads the right project's context on any machine. (issue #5 follow-up)
-        const projectDir = process.env.CLAUDE_PROJECT_DIR || process.cwd();
-        const projectFolderName = projectDir.replace(/[\\/]+$/, '').replace(/[:\\/]/g, '-');
-        const memoryDir = path.join(process.env.USERPROFILE || os.homedir(), '.claude', 'projects',
-          projectFolderName, 'memory');
-        const activeContextPath = path.join(memoryDir, 'ACTIVE-CONTEXT.md');
-        if (fs.existsSync(activeContextPath)) {
-          const contextContent = fs.readFileSync(activeContextPath, 'utf-8').trim();
-          if (contextContent) {
-            console.log('## Session Continuity');
-            console.log(contextContent);
-            console.log('');
-          }
-        }
-      } catch (ctxErr) {
-        // Non-critical — never block startup
-      }
+      // ACTIVE-CONTEXT.md injection removed (task 78bcf274, Eval P4).
+      // The session-start skill is the single owner of session continuity via
+      // get_latest_session; force-injecting the stale ACTIVE-CONTEXT.md at every boot
+      // contradicted that and inflated boot size (~3.8KB worst case). The file still
+      // exists as an on-demand artifact (active-context-hook.js / session-save-hook.js
+      // keep writing it, project-management keeps updating it) — it's simply no longer
+      // auto-injected here.
 
       // Inject per-project knowledge from DB with attention decay ranking
       try {
@@ -559,7 +545,7 @@ async function main() {
                 AND confidence != 'deprecated'
                 AND category NOT IN ('web_research')
               ORDER BY decay_score DESC
-              LIMIT 15
+              LIMIT 5
             `).all(projectId);
 
             // Bump reference counts for injected entries
@@ -581,26 +567,21 @@ async function main() {
                 AND confidence != 'deprecated'
                 AND category NOT IN ('web_research')
               ORDER BY updated_at DESC
-              LIMIT 15
+              LIMIT 5
             `).all(projectId);
           }
           kdb.close();
 
           if (knowledge.length > 0) {
             console.log('## Project Knowledge');
-            // Top 10: full injection (200 char content)
-            const fullInject = knowledge.slice(0, 10);
-            for (const entry of fullInject) {
-              console.log(`**${entry.title}** (${entry.category}): ${entry.content.substring(0, 200)}${entry.content.length > 200 ? '...' : ''}`);
+            // Top 5: title + first content line only (trimmed from 15 for boot size; task 78bcf274).
+            // Full content is one query_knowledge call away — no need to front-load it at every boot.
+            for (const entry of knowledge.slice(0, 5)) {
+              const firstLine = (entry.content || '').split(/\r?\n/)[0].substring(0, 120);
+              const truncated = (entry.content || '').length > firstLine.length ? '…' : '';
+              console.log(`**${entry.title}** (${entry.category}): ${firstLine}${truncated}`);
             }
-            // Next 5: title-only (saves context tokens)
-            const titleOnly = knowledge.slice(10, 15);
-            if (titleOnly.length > 0) {
-              console.log('_Also available (use query_knowledge for details):_');
-              for (const entry of titleOnly) {
-                console.log(`- ${entry.title} (${entry.category})`);
-              }
-            }
+            console.log('_More available — use query_knowledge to search the full knowledge base by topic._');
             console.log('');
           }
         }
@@ -641,54 +622,11 @@ async function main() {
             console.log('No tasks assigned. Use list_tasks to see the board or claim_task to pick up work.');
           }
 
-          // Inject last session recap (non-blocking — skip if API is unavailable)
-          try {
-            const http = require('http');
-            const projectPath = process.cwd();
-            const sessionRecap = await new Promise((resolve) => {
-              const req = http.request({
-                hostname: 'localhost',
-                port: 5050,
-                path: `/api/session-lineage/latest?projectPath=${encodeURIComponent(projectPath)}&agentName=${encodeURIComponent(terminalName)}`,
-                method: 'GET',
-                headers: { 'Content-Type': 'application/json' },
-                timeout: 3000
-              }, (res) => {
-                let body = '';
-                res.on('data', (chunk) => { body += chunk; });
-                res.on('end', () => {
-                  try {
-                    resolve(JSON.parse(body));
-                  } catch (e) {
-                    resolve(null);
-                  }
-                });
-              });
-              req.on('error', () => resolve(null));
-              req.on('timeout', () => { req.destroy(); resolve(null); });
-              req.end();
-            });
-
-            if (sessionRecap && sessionRecap.session) {
-              const sessionId = sessionRecap.session.sessionId || sessionRecap.session.id;
-              console.log('');
-              if (sessionRecap.summary) {
-                console.log(`## Last Session Recap\n${sessionRecap.summary}`);
-              } else {
-                const msgs = sessionRecap.recentMessages || [];
-                if (msgs.length > 0) {
-                  const msgLines = msgs.map((m, i) => {
-                    const preview = (m.content || '').substring(0, 300);
-                    return `${i + 1}. [${m.role}] ${preview}${(m.content || '').length > 300 ? '...' : ''}`;
-                  }).join('\n');
-                  console.log(`## Last Session (no summary cached)\nRecent activity from your last session:\n${msgLines}`);
-                  console.log(`NOTE: No cached summary for session ${sessionId}. The project-management skill will generate one.`);
-                }
-              }
-            }
-          } catch (sessionErr) {
-            // Session recap is non-critical — never block startup
-          }
+          // Last Session Recap injection removed (task 78bcf274, Eval P4).
+          // The session-start skill is the single recap owner: it calls get_latest_session
+          // (with a search_session_memory fallback for the no-summary case). Emitting the
+          // recap here too meant two sources for one thing and an extra boot-time REST round
+          // trip. reload-context still fetches the recap from the same owner on the /clear path.
         }
       } catch (err) {
         dtrace(`STEP-ERR: Error reading kanban/plan context: ${err.message}`);
