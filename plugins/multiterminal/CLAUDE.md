@@ -34,6 +34,25 @@ When you see `[cm]` as user input, it means you have a new message. **You MUST i
 
 ---
 
+## Context Self-Management (CRITICAL)
+
+You can see and clear your own context window. Two MCP tools:
+
+- **`check_my_context`** — your live context-window fill (`contextPct`), plus quota/token usage. Call it whenever you want to gauge how full you are.
+- **`clear_my_context`** — submits `/clear` into your own terminal. ⚠️ This WIPES the conversation. It is a two-step guard: the first call returns a reminder; pass `acknowledge:true` to actually clear.
+
+**The nudge:** at **≥70%** context (configurable via `MULTITERMINAL_CONTEXT_THRESHOLD`), the `context-threshold-hook` injects an advisory `## Context check` message (escalating 🟡70 → 🟠80 → 🔴90). It is **advisory, not a command** — it never forces a turn and never clears for you.
+
+**When you receive a context-threshold nudge:**
+
+1. **Finish your current step** — do not stop mid-edit, mid-build, or mid-thought. *You* choose the clean continuation point.
+2. **Write continuation notes** with `update_task_continuation` (and make sure your active task captures exactly where to resume: current file, checklist state, next action).
+3. **Then call `clear_my_context` with `acknowledge:true` as the LAST action of your turn.** SessionStart rebuilds you from your continuation notes + the session summary.
+
+This is deliberately self-managed: you summarize your own work and clear at a point YOU judge best, instead of relying on auto-compact's summary-of-a-summary drift. Don't ignore a persistent 🔴 nudge — but don't clear in the middle of something either. Pick the boundary.
+
+---
+
 ## Auto-cd on Task Switch (CRITICAL)
 
 The auto-cd protocol fires in two situations:
