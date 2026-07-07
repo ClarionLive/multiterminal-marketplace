@@ -1,0 +1,4 @@
+[
+  { "name": "no-taskid", "stdin": { "tool_input": {} } },
+  { "name": "malformed-json", "stdin": "not json" }
+]

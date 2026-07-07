@@ -30,13 +30,23 @@ const MEMORY_DIR = path.join(
 );
 const CONTEXT_FILE = path.join(MEMORY_DIR, 'ACTIVE-CONTEXT.md');
 
-// Read stdin for hook context (tool_input, tool_output)
-let input = '';
-process.stdin.setEncoding('utf8');
-process.stdin.on('data', chunk => input += chunk);
-process.stdin.on('end', async () => {
+// ── Core (dispatcher-callable) ───────────────────────────────────────
+// Parsed hookData in (CLI shim reads stdin). Injectable fetchJson/fs/env/nowIso +
+// memoryDir/contextFile so the fetch→build→write ACTIVE-CONTEXT.md path is
+// unit-testable without a live REST call or real file write (ticket 42c91001).
+// Side-effect-only (no stdout). NOTE: this hook does NOT self-gate on tool_name —
+// it relies on its hooks.json matcher (4 task tools + build). Under the dispatcher
+// it carries that matcher in the TABLE (B′), so it only runs on its tools, never
+// blanket PostToolUse. Returns {exitCode:0}.
+async function run(hookData, deps = {}) {
+  const _fs = deps.fs || fs;
+  const env = deps.env || process.env;
+  const _fetchJson = deps.fetchJson || fetchJson;
+  const nowIso = typeof deps.nowIso === 'function' ? deps.nowIso : () => new Date().toISOString();
+  const memoryDir = deps.memoryDir || MEMORY_DIR;
+  const contextFile = deps.contextFile || CONTEXT_FILE;
+
   try {
-    const hookData = JSON.parse(input);
     const toolName = hookData.tool_name || '';
     const toolInput = hookData.tool_input || {};
     const toolOutput = hookData.tool_output || '';
@@ -54,55 +64,70 @@ process.stdin.on('end', async () => {
     }
 
     // Fetch active tasks from REST API
-    const tasks = await fetchJson('/api/tasks?status=in_progress');
+    const tasks = await _fetchJson('/api/tasks?status=in_progress');
     if (!tasks || (!tasks.tasks && !Array.isArray(tasks))) {
       // No tasks or API unavailable — write minimal context
       if (buildStatus) {
-        await writeMinimalContext(buildStatus);
+        await writeMinimalContext(buildStatus, _fs, memoryDir, contextFile, nowIso);
       }
-      process.exit(0);
+      return { exitCode: 0 };
     }
 
     const taskList = tasks.tasks || tasks;
     if (!Array.isArray(taskList) || taskList.length === 0) {
       if (buildStatus) {
-        await writeMinimalContext(buildStatus);
+        await writeMinimalContext(buildStatus, _fs, memoryDir, contextFile, nowIso);
       }
-      process.exit(0);
+      return { exitCode: 0 };
     }
 
     // Find the active task for THIS agent (filter by MULTITERMINAL_NAME first)
-    const myName = process.env.MULTITERMINAL_NAME || '';
+    const myName = env.MULTITERMINAL_NAME || '';
     const activeTask = taskList.find(t => t.subStatus === 'active' && t.assignee === myName)
       || taskList.find(t => t.assignee === myName)
       || taskList.find(t => t.subStatus === 'active')
       || taskList[0];
 
     // Fetch full task detail
-    const detail = await fetchJson(`/api/tasks/${activeTask.id}`);
+    const detail = await _fetchJson(`/api/tasks/${activeTask.id}`);
 
     // Fetch reports for this task
-    const reportsData = await fetchJson(`/api/tasks/${activeTask.id}/reports`);
+    const reportsData = await _fetchJson(`/api/tasks/${activeTask.id}/reports`);
     const reports = reportsData ? (reportsData.reports || []) : [];
 
     // Build the context file
-    const content = buildContextContent(detail || activeTask, reports, buildStatus, taskList);
+    const content = buildContextContent(detail || activeTask, reports, buildStatus, taskList, nowIso);
 
     // Ensure directory exists and write
-    if (!fs.existsSync(MEMORY_DIR)) {
-      fs.mkdirSync(MEMORY_DIR, { recursive: true });
+    if (!_fs.existsSync(memoryDir)) {
+      _fs.mkdirSync(memoryDir, { recursive: true });
     }
-    fs.writeFileSync(CONTEXT_FILE, content, 'utf8');
+    _fs.writeFileSync(contextFile, content, 'utf8');
 
-    process.exit(0);
+    return { exitCode: 0 };
   } catch (err) {
     // Never block the agent — fail silently
-    process.exit(0);
+    return { exitCode: 0 };
   }
-});
+}
 
-function buildContextContent(task, reports, buildStatus, allTasks) {
-  const now = new Date().toISOString().split('T')[0];
+module.exports = { run };
+
+// ── CLI shim (standalone invocation — preserves exact prior behavior) ─
+if (require.main === module) {
+  let input = '';
+  process.stdin.setEncoding('utf8');
+  process.stdin.on('data', chunk => input += chunk);
+  process.stdin.on('end', async () => {
+    let hookData;
+    try { hookData = JSON.parse(input); } catch { process.exit(0); return; }
+    try { await run(hookData, {}); } catch { /* never block */ }
+    process.exit(0);
+  });
+}
+
+function buildContextContent(task, reports, buildStatus, allTasks, nowIsoFn = () => new Date().toISOString()) {
+  const now = nowIsoFn().split('T')[0];
   const lines = [];
 
   lines.push('# Active Context');
@@ -203,18 +228,18 @@ function buildContextContent(task, reports, buildStatus, allTasks) {
   }
 
   // Footer
-  lines.push(`_Auto-generated by active-context-hook.js at ${new Date().toISOString()}_`);
+  lines.push(`_Auto-generated by active-context-hook.js at ${nowIsoFn()}_`);
 
   return lines.join('\n');
 }
 
-async function writeMinimalContext(buildStatus) {
-  const now = new Date().toISOString().split('T')[0];
-  const content = `# Active Context\n\n## Current Work (${now})\n\n**Last Build:** ${buildStatus}\n\n_Auto-generated by active-context-hook.js at ${new Date().toISOString()}_\n`;
-  if (!fs.existsSync(MEMORY_DIR)) {
-    fs.mkdirSync(MEMORY_DIR, { recursive: true });
+async function writeMinimalContext(buildStatus, _fs = fs, memoryDir = MEMORY_DIR, contextFile = CONTEXT_FILE, nowIsoFn = () => new Date().toISOString()) {
+  const now = nowIsoFn().split('T')[0];
+  const content = `# Active Context\n\n## Current Work (${now})\n\n**Last Build:** ${buildStatus}\n\n_Auto-generated by active-context-hook.js at ${nowIsoFn()}_\n`;
+  if (!_fs.existsSync(memoryDir)) {
+    _fs.mkdirSync(memoryDir, { recursive: true });
   }
-  fs.writeFileSync(CONTEXT_FILE, content, 'utf8');
+  _fs.writeFileSync(contextFile, content, 'utf8');
 }
 
 function fetchJson(urlPath) {

@@ -181,6 +181,39 @@ async function main() {
     console.log(`    COLLAPSE GATE requires REMAINING == 0 (every node leaf dispatched XOR standalone-allowlisted).`);
   }
 
+  // ── T7: matcher-gating runtime (B′) — a table-matcher leaf runs ONLY on its tools ──
+  {
+    const ran = [];
+    const table = { PostToolUse: [
+      { name: 'gated', head: 'sync', matcher: 'mcp__x__foo|mcp__x__bar', run: async () => { ran.push('gated'); return { exitCode: 0 }; } },
+      { name: 'blind', head: 'sync', run: async () => { ran.push('blind'); return { exitCode: 0 }; } },
+    ] };
+
+    ran.length = 0;
+    await dispatch('PostToolUse', 'sync', { tool_name: 'Edit' }, table);
+    ok(ran.length === 1 && ran[0] === 'blind', 'T7 matcher MISS → gated leaf skipped, matcher-blind leaf still runs');
+
+    ran.length = 0;
+    await dispatch('PostToolUse', 'sync', { tool_name: 'mcp__x__foo' }, table);
+    ok(ran.includes('gated') && ran.includes('blind'), 'T7 matcher HIT → gated + blind both run');
+
+    ran.length = 0;
+    await dispatch('PostToolUse', 'sync', { tool_name: 'mcp__x__foobar' }, table);
+    ok(!ran.includes('gated'), 'T7 ANCHORED full-match → mcp__x__foobar does NOT match mcp__x__foo (no substring leak)');
+
+    // async head is matcher-gated too
+    const aran = [];
+    const atable = { PostToolUse: [
+      { name: 'gated-async', head: 'async', matcher: 'mcp__x__foo', run: async () => { aran.push('g'); } },
+    ] };
+    await dispatch('PostToolUse', 'async', { tool_name: 'Edit' }, atable);
+    ok(aran.length === 0, 'T7 async head also matcher-gated (miss → not run)');
+    await dispatch('PostToolUse', 'async', { tool_name: 'mcp__x__foo' }, atable);
+    ok(aran.length === 1, 'T7 async head runs on matcher hit');
+
+    console.log('  ✓ T7 matcher-gating: sync + async heads honor the table-matcher (anchored full-match, no substring leak)');
+  }
+
   console.log(`\ndispatch T-suite: PASS (${passed} assertions)`);
 }
 

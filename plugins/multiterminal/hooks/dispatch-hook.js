@@ -53,7 +53,21 @@ const TABLE = {
     // self-gates on the statusline pct — correct scope for a blanket dispatch.
     { name: 'context-threshold-hook', mod: './context-threshold-hook.js', head: 'sync' },
     { name: 'research-cache-hook', mod: './research-cache-hook.js', head: 'sync' },
-    // fan-out (B′, table-matcher): active-context, pipeline-trigger
+    // B′: these two do NOT self-gate to their exact tools, so they carry the
+    // hooks.json matcher they replaced — the dispatcher runs them only on those
+    // tools (zero added spawns; it's already firing on every PostToolUse).
+    {
+      name: 'active-context-hook',
+      mod: './active-context-hook.js',
+      head: 'sync',
+      matcher: 'mcp__multiterminal__update_task_checklist|mcp__multiterminal__update_task_status|mcp__multiterminal__update_task_continuation|mcp__multiterminal__build_project|mcp__windows-build-runner__build_project',
+    },
+    {
+      name: 'pipeline-trigger-hook',
+      mod: './pipeline-trigger-hook.js',
+      head: 'sync',
+      matcher: 'mcp__multiterminal__update_task_checklist',
+    },
   ],
   PostToolUseFailure: [
     { name: 'activity-hook', mod: './activity-hook.js', head: 'async' },

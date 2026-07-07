@@ -14,29 +14,37 @@
 
 const http = require('http');
 
-let input = '';
-process.stdin.setEncoding('utf8');
-process.stdin.on('data', chunk => input += chunk);
-process.stdin.on('end', async () => {
+// ── Core (dispatcher-callable) ───────────────────────────────────────
+// Parsed hookData in (CLI shim reads stdin). Injectable getTaskDetail /
+// sendChannelMessage / env so the all-testing-or-done trigger is unit-testable
+// without live REST calls (ticket 42c91001). Gates on toolInput.taskId presence
+// but NOT the exact tool, so under the dispatcher it carries its hooks.json
+// matcher (update_task_checklist) in the TABLE (B′) to keep its original scope.
+// Emits the AUTO-PIPELINE reminder as stdout (SYNC; not a decision → accumulates);
+// stdout has a trailing newline (byte-identical to the prior console.log).
+async function run(hookData, deps = {}) {
+  const env = deps.env || process.env;
+  const _getTaskDetail = deps.getTaskDetail || getTaskDetail;
+  const _sendChannelMessage = deps.sendChannelMessage || sendChannelMessage;
+
   try {
-    const hookData = JSON.parse(input);
-    const toolInput = hookData.tool_input || {};
+    const toolInput = (hookData && hookData.tool_input) || {};
     const taskId = toolInput.taskId;
 
     if (!taskId) {
-      process.exit(0);
+      return { exitCode: 0 };
     }
 
     // Query the REST API for full task detail
-    const taskData = await getTaskDetail(taskId);
+    const taskData = await _getTaskDetail(taskId);
     if (!taskData) {
-      process.exit(0);
+      return { exitCode: 0 };
     }
 
     // Parse checklist
     const checklist = parseChecklist(taskData);
     if (!checklist || checklist.length === 0) {
-      process.exit(0);
+      return { exitCode: 0 };
     }
 
     // Check if ALL items are in "testing" or "done"
@@ -51,26 +59,45 @@ process.stdin.on('end', async () => {
       const testingCount = checklist.filter(i => i.status === 'testing').length;
       const doneCount = checklist.filter(i => i.status === 'done').length;
 
-      // 1. Console output — system reminder to the agent
-      console.log(`AUTO-PIPELINE TRIGGER: All ${checklist.length} checklist items are in testing (${testingCount}) or done (${doneCount}). ` +
+      const msg = `AUTO-PIPELINE TRIGGER: All ${checklist.length} checklist items are in testing (${testingCount}) or done (${doneCount}). ` +
         `No pending or coding items remain. ` +
         `You MUST run the pipeline now — invoke Skill(skill="multiterminal:pipeline") immediately. ` +
-        `Do NOT ask the user for permission. The pipeline must pass before presenting items for manual testing.`);
+        `Do NOT ask the user for permission. The pipeline must pass before presenting items for manual testing.`;
 
-      // 2. Send channel message to the agent — arrives as a <channel> tag
-      const agentName = process.env.MULTITERMINAL_NAME;
+      // Send channel message to the agent — arrives as a <channel> tag
+      const agentName = env.MULTITERMINAL_NAME;
       if (agentName) {
         const taskTitle = taskData.title || taskId;
-        await sendChannelMessage(agentName, taskId, taskTitle, testingCount, doneCount, checklist.length);
+        await _sendChannelMessage(agentName, taskId, taskTitle, testingCount, doneCount, checklist.length);
       }
+
+      // Console output — system reminder to the agent (console.log added a newline)
+      return { exitCode: 0, stdout: msg + '\n' };
     }
 
-    process.exit(0);
+    return { exitCode: 0 };
   } catch (err) {
     // Hook errors should not block the agent — fail silently
-    process.exit(0);
+    return { exitCode: 0 };
   }
-});
+}
+
+module.exports = { run };
+
+// ── CLI shim (standalone invocation — preserves exact prior behavior) ─
+if (require.main === module) {
+  let input = '';
+  process.stdin.setEncoding('utf8');
+  process.stdin.on('data', chunk => input += chunk);
+  process.stdin.on('end', async () => {
+    let hookData;
+    try { hookData = JSON.parse(input); } catch { process.exit(0); return; }
+    let out = { exitCode: 0 };
+    try { out = await run(hookData, {}); } catch { out = { exitCode: 0 }; }
+    if (out && out.stdout) process.stdout.write(out.stdout);
+    process.exit((out && out.exitCode) || 0);
+  });
+}
 
 /**
  * Send a channel message to the agent via the broker's messaging endpoint.
