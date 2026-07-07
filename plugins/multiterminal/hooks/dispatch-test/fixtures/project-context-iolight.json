@@ -1,0 +1,5 @@
+[
+  { "name": "malformed-json", "stdin": "not json" },
+  { "name": "non-sessionstart-event", "stdin": { "hook_type": "PostToolUse" } },
+  { "name": "non-sessionstart-type-alias", "stdin": { "type": "Stop" } }
+]

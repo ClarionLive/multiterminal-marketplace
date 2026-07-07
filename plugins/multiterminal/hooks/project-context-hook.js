@@ -215,60 +215,82 @@ function formatProjectContext(ctx) {
   return lines.join('\n').trim();
 }
 
-async function main() {
-  // Read hook input from stdin
-  let input = '';
-  for await (const chunk of process.stdin) {
-    input += chunk;
-  }
+// ── Core (dispatcher-callable) ───────────────────────────────────────
+// Parses nothing from stdin (the CLI shim does that); takes the already-parsed
+// hookData plus injectable side-effect deps (ensurePluginInstalled / fetch /
+// env) so the SessionStart install+fetch path is unit-testable without a real
+// `claude plugin install` spawn or a live REST call (ticket 42c91001). Returns
+// {exitCode:0, stdout?} — stdout is the formatted project context (identical
+// bytes to the prior console.log) or absent. SessionStart-only; other events
+// no-op. SYNC dispatch head (context emitter; not a decision → accumulates).
+async function run(hookData, deps = {}) {
+  const _ensurePluginInstalled = deps.ensurePluginInstalled || ensurePluginInstalled;
+  const _fetchProjectContext = deps.fetchProjectContext || fetchProjectContext;
+  const env = deps.env || process.env;
 
-  // Parse hook type
-  let hookData;
-  try {
-    hookData = JSON.parse(input);
-  } catch (e) {
-    // Malformed input - no-op
-    process.exit(0);
-    return;
-  }
-
-  const hookType = hookData.hook_type || hookData.type;
+  const hookType = hookData && (hookData.hook_type || hookData.type);
 
   // Only act on SessionStart
   if (hookType !== 'SessionStart') {
-    process.exit(0);
-    return;
+    return { exitCode: 0 };
   }
 
   // Auto-install plugin if needed (once per project, silent)
-  ensurePluginInstalled();
+  _ensurePluginInstalled();
 
   // Check if a project ID is set in the environment
-  const projectId = process.env.MULTITERMINAL_PROJECT_ID;
+  const projectId = env.MULTITERMINAL_PROJECT_ID;
   if (!projectId) {
     // No project context for this session
-    process.exit(0);
-    return;
+    return { exitCode: 0 };
   }
 
   // Fetch context from REST API
-  const ctx = await fetchProjectContext(projectId);
+  const ctx = await _fetchProjectContext(projectId);
   if (!ctx) {
     // API unreachable or project not found - continue silently
-    process.exit(0);
-    return;
+    return { exitCode: 0 };
   }
 
-  // Format and output context for Claude
+  // Format context for Claude (console.log appended a trailing newline)
   const formatted = formatProjectContext(ctx);
   if (formatted) {
-    console.log(formatted);
+    return { exitCode: 0, stdout: formatted + '\n' };
   }
 
-  process.exit(0);
+  return { exitCode: 0 };
 }
 
-main().catch(() => {
-  // Never block Claude on errors
-  process.exit(0);
-});
+module.exports = { run };
+
+// ── CLI shim (standalone invocation — preserves exact prior behavior) ─
+if (require.main === module) {
+  (async () => {
+    // Read hook input from stdin
+    let input = '';
+    for await (const chunk of process.stdin) {
+      input += chunk;
+    }
+
+    // Parse hook type — malformed input no-ops before any side-effect
+    let hookData;
+    try {
+      hookData = JSON.parse(input);
+    } catch (e) {
+      process.exit(0);
+      return;
+    }
+
+    let out = { exitCode: 0 };
+    try {
+      out = await run(hookData, {});
+    } catch (e) {
+      out = { exitCode: 0 };
+    }
+    if (out && out.stdout) process.stdout.write(out.stdout);
+    process.exit((out && out.exitCode) || 0);
+  })().catch(() => {
+    // Never block Claude on errors
+    process.exit(0);
+  });
+}

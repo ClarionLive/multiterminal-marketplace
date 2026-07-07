@@ -1,0 +1,4 @@
+[
+  { "name": "no-name", "stdin": {}, "env": { "MULTITERMINAL_NAME": "" } },
+  { "name": "probe-name-no-statusfile", "stdin": {}, "env": { "MULTITERMINAL_NAME": "EquivProbe-zzz-42c91001", "MULTITERMINAL_DOC_ID": "" } }
+]

@@ -22,14 +22,22 @@
  *
  * Failure-tolerant: any missing file / parse error / no name → exit 0 silently.
  * Never blocks Claude.
+ *
+ * DISPATCHER FORM (ticket 42c91001): the advisory core is `run(hookData, opts)`
+ * returning {exitCode, stdout}. It ignores stdin/argv (as it always has) and
+ * takes injectable deps (fs / env / tmp / now) so the band/debounce/reset logic
+ * is unit-testable with an in-memory fs and a fixed clock — no live statusline
+ * or marker files. Advisory class → SYNC dispatch head, accumulates (not a
+ * decision → never short-circuits). The CLI shim preserves exact standalone
+ * behavior (synchronous, single stdout write, always exit 0).
  */
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
 
-function readJsonSafe(p) {
+function readJsonSafe(_fs, p) {
   try {
-    const raw = fs.readFileSync(p, 'utf8');
+    const raw = _fs.readFileSync(p, 'utf8');
     if (!raw || !raw.trim()) return null;
     return JSON.parse(raw);
   } catch {
@@ -40,27 +48,26 @@ function readJsonSafe(p) {
 // Resolve the freshest statusline file for this terminal name (mirrors
 // StatusLineStatsReader: exact docId file if known, else newest by the data's
 // own timestamp, skipping siblings/zombies without a timestamp).
-function findStatusFile(tmp, name, docId) {
+function findStatusFile(_fs, tmp, name, docId, nowMs) {
   if (docId) {
     const exact = path.join(tmp, `mt-statusline-${name}-${docId}.json`);
-    if (fs.existsSync(exact)) return exact;
+    if (_fs.existsSync(exact)) return exact;
   }
   let best = null;
   let bestTs = -1;
   let entries;
   try {
-    entries = fs.readdirSync(tmp);
+    entries = _fs.readdirSync(tmp);
   } catch {
     return null;
   }
   const prefix = `mt-statusline-${name}-`;
-  const now = Date.now();
   for (const f of entries) {
     if (!f.startsWith(prefix) || !f.endsWith('.json')) continue;
     const full = path.join(tmp, f);
-    const data = readJsonSafe(full);
+    const data = readJsonSafe(_fs, full);
     if (!data || typeof data.timestamp !== 'number') continue;
-    if (data.timestamp > now) continue; // future-dated → skewed/planted, skip
+    if (data.timestamp > nowMs) continue; // future-dated → skewed/planted, skip
     if (data.timestamp > bestTs) {
       bestTs = data.timestamp;
       best = full;
@@ -69,30 +76,39 @@ function findStatusFile(tmp, name, docId) {
   return best;
 }
 
-function main() {
-  const name = process.env.MULTITERMINAL_NAME;
-  if (!name) return; // not a MultiTerminal terminal
+// ── Core (dispatcher-callable) ───────────────────────────────────────
+// Ignores hookData (this hook has always ignored stdin/argv). Deps injectable
+// (fs / env / tmp / now) for deterministic band+debounce testing. Returns
+// {exitCode:0, stdout?} — stdout is the advisory nudge string (identical bytes
+// to the prior process.stdout.write) or absent when there's nothing to say.
+function run(hookData, opts = {}) {
+  const _fs = opts.fs || fs;
+  const env = opts.env || process.env;
+  const tmp = opts.tmp || os.tmpdir();
+  const nowMs = typeof opts.now === 'function' ? opts.now() : (opts.now != null ? opts.now : Date.now());
 
-  const tmp = os.tmpdir();
-  const docId = process.env.MULTITERMINAL_DOC_ID || null;
-  const statusFile = findStatusFile(tmp, name, docId);
-  if (!statusFile) return;
+  const name = env.MULTITERMINAL_NAME;
+  if (!name) return { exitCode: 0 }; // not a MultiTerminal terminal
 
-  const data = readJsonSafe(statusFile);
-  if (!data) return;
+  const docId = env.MULTITERMINAL_DOC_ID || null;
+  const statusFile = findStatusFile(_fs, tmp, name, docId, nowMs);
+  if (!statusFile) return { exitCode: 0 };
+
+  const data = readJsonSafe(_fs, statusFile);
+  if (!data) return { exitCode: 0 };
 
   const pct = data.contextPct;
-  if (typeof pct !== 'number' || !isFinite(pct)) return;
+  if (typeof pct !== 'number' || !isFinite(pct)) return { exitCode: 0 };
 
   // Ignore a very old reading so we never nudge off a zombie file (context can
   // only really be assessed from a recent render). 5 min is generous — an
   // actively-working terminal rewrites this every render.
   if (typeof data.timestamp === 'number') {
-    const ageMs = Date.now() - data.timestamp;
-    if (ageMs > 5 * 60 * 1000) return;
+    const ageMs = nowMs - data.timestamp;
+    if (ageMs > 5 * 60 * 1000) return { exitCode: 0 };
   }
 
-  let threshold = parseInt(process.env.MULTITERMINAL_CONTEXT_THRESHOLD || '70', 10);
+  let threshold = parseInt(env.MULTITERMINAL_CONTEXT_THRESHOLD || '70', 10);
   if (!Number.isFinite(threshold) || threshold <= 0 || threshold > 100) threshold = 70;
 
   // Highest crossed band. Default bands 70/80/90; if threshold is raised above a
@@ -108,16 +124,16 @@ function main() {
   if (band === null) {
     // Below threshold (e.g. fresh after a clear) — reset the marker so a future
     // climb re-nudges from the lowest band.
-    try { if (fs.existsSync(markerPath)) fs.unlinkSync(markerPath); } catch { /* ignore */ }
-    return;
+    try { if (_fs.existsSync(markerPath)) _fs.unlinkSync(markerPath); } catch { /* ignore */ }
+    return { exitCode: 0 };
   }
 
   // Debounce: only nudge when entering a NEW (higher) band than last time.
-  const marker = readJsonSafe(markerPath);
-  if (marker && typeof marker.band === 'number' && marker.band >= band) return;
+  const marker = readJsonSafe(_fs, markerPath);
+  if (marker && typeof marker.band === 'number' && marker.band >= band) return { exitCode: 0 };
 
   try {
-    fs.writeFileSync(markerPath, JSON.stringify({ band, pct, ts: Date.now() }), 'utf8');
+    _fs.writeFileSync(markerPath, JSON.stringify({ band, pct, ts: nowMs }), 'utf8');
   } catch {
     // If we can't persist the marker, still nudge once rather than spam: best effort.
   }
@@ -141,12 +157,16 @@ function main() {
   }
 
   // Plain stdout → Claude Code surfaces it as additional context. Advisory only.
-  process.stdout.write(`## Context check\n${msg}\n`);
+  return { exitCode: 0, stdout: `## Context check\n${msg}\n` };
 }
 
-try {
-  main();
-} catch {
-  // Never block Claude on a nudge.
+module.exports = { run };
+
+// ── CLI shim (standalone invocation — preserves exact prior behavior) ─
+// Synchronous, ignores stdin/argv, single stdout write, always exit 0.
+if (require.main === module) {
+  let out = { exitCode: 0 };
+  try { out = run({}, {}); } catch { out = { exitCode: 0 }; }
+  if (out && out.stdout) process.stdout.write(out.stdout);
+  process.exit((out && out.exitCode) || 0);
 }
-process.exit(0);

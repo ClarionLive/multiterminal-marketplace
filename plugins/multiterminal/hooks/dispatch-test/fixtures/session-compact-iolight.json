@@ -1,0 +1,4 @@
+[
+  { "name": "name-empty-rules-only", "stdin": {}, "env": { "MULTITERMINAL_NAME": "", "APPDATA": "C:/nonexistent-equiv-42c91001" } },
+  { "name": "name-set-db-isolated", "stdin": {}, "env": { "MULTITERMINAL_NAME": "EquivProbe-zzz-42c91001", "MULTITERMINAL_PROJECT_ID": "", "APPDATA": "C:/nonexistent-equiv-42c91001" } }
+]

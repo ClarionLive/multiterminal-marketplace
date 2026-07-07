@@ -27,6 +27,19 @@ const path = require('path');
 
 // leaf spec: { name, mod (require path) OR run (fn, for tests), head: 'sync'|'async' }
 const TABLE = {
+  SessionStart: [
+    // project-context self-gates on hookType==='SessionStart' and is wired with
+    // NO matcher in hooks.json (fires on every start incl. compact) — its correct
+    // scope, so a blanket SessionStart dispatch is right for it.
+    { name: 'project-context-hook', mod: './project-context-hook.js', head: 'sync' },
+    // fan-out: session-status (sync, matcher startup|resume|clear),
+    //          session-compact (sync, matcher compact).
+    // MATCHER NOTE (surfaced to PM): session-status/session-compact are matcher-
+    // SCOPED in hooks.json and do NOT self-gate on hookData.source, so a per-event
+    // (matcher-blind) dispatch would fire them on the wrong starts. They stay
+    // UNWIRED pending the collapse-time matcher-handling ruling. The powershell
+    // echo (startup|resume|clear) is non-node and stays standalone regardless.
+  ],
   PreToolUse: [
     { name: 'safety-hook', mod: './safety-hook.js', head: 'sync' },
     { name: 'task-to-agent-hook', mod: './task-to-agent-hook.js', head: 'sync' },
@@ -37,8 +50,10 @@ const TABLE = {
     { name: 'activity-hook', mod: './activity-hook.js', head: 'async' },
     { name: 'commentary-hook', mod: './commentary-hook.js', head: 'async' },
     { name: 'inbox-check-hook', mod: './inbox-check-hook.js', head: 'sync' },
-    // fan-out: active-context (sync), pipeline-trigger (sync),
-    //          research-cache (sync), context-threshold (sync)
+    // context-threshold: no matcher in hooks.json (fires on all PostToolUse),
+    // self-gates on the statusline pct — correct scope for a blanket dispatch.
+    { name: 'context-threshold-hook', mod: './context-threshold-hook.js', head: 'sync' },
+    // fan-out: active-context (sync), pipeline-trigger (sync), research-cache (sync)
   ],
   PostToolUseFailure: [
     { name: 'activity-hook', mod: './activity-hook.js', head: 'async' },
@@ -55,13 +70,14 @@ const TABLE = {
   ],
   UserPromptSubmit: [
     { name: 'desktop-presence-hook', mod: './desktop-presence-hook.js', head: 'async' },
-    // fan-out: inbox-check (sync), context-threshold (sync)
+    { name: 'context-threshold-hook', mod: './context-threshold-hook.js', head: 'sync' },
+    // fan-out: inbox-check (sync)
   ],
   Notification: [
     { name: 'notification-hook', mod: './notification-hook.js', head: 'async' },
   ],
-  // Remaining events (SessionStart/SessionEnd/PreCompact/Elicitation/SubagentStart/
-  // TeammateIdle) wired during fan-out.
+  // Remaining events (SessionEnd/PreCompact/Elicitation/SubagentStart/
+  // TeammateIdle) wired during fan-out; SessionStart partially wired above.
 };
 
 function resolveRun(leaf) {

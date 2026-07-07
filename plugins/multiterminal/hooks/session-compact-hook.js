@@ -18,24 +18,38 @@ const DB_PATH = path.join(
   'multiterminal', 'multiterminal.db'
 );
 
-async function main() {
-  let input = '';
-  for await (const chunk of process.stdin) {
-    input += chunk;
-  }
+// ── Core (dispatcher-callable) ───────────────────────────────────────
+// Ignores hookData (this hook has always drained but never parsed stdin — it
+// keys entirely off env). Read-only: rules file + readonly DB, no writes/http/
+// spawn. Deps injectable (fs / env / cwd / dbPath / requireBetterSqlite3) so the
+// active-task branch is unit-testable with a stub DB and no live SQLite (ticket
+// 42c91001). Emits via an `out` sink that replicates console.log's per-line
+// newline exactly. Returns {exitCode:0, stdout?}. SYNC dispatch head (post-
+// compaction context re-injection; not a decision → accumulates).
+function run(hookData, deps = {}) {
+  const _fs = deps.fs || fs;
+  const env = deps.env || process.env;
+  const cwd = deps.cwd || process.cwd();
+  const dbPath = deps.dbPath || DB_PATH;
+  // Lazy default require mirrors the original (resolved inside the try below).
+  const requireDb = deps.requireBetterSqlite3
+    || (() => require('./_sqlite').requireBetterSqlite3());
 
-  const terminalName = process.env.MULTITERMINAL_NAME || '';
+  const out = [];
+  const emit = (s = '') => out.push(s); // one console.log ≡ one out entry + '\n'
+
+  const terminalName = env.MULTITERMINAL_NAME || '';
 
   // 1. Re-inject rules
   try {
-    const rulesPath = path.join(process.cwd(), 'multiterminal-rules.md');
-    if (fs.existsSync(rulesPath)) {
-      const rules = fs.readFileSync(rulesPath, 'utf-8').trim();
+    const rulesPath = path.join(cwd, 'multiterminal-rules.md');
+    if (_fs.existsSync(rulesPath)) {
+      const rules = _fs.readFileSync(rulesPath, 'utf-8').trim();
       if (rules) {
-        console.log('[Post-Compaction Context Re-injection]');
-        console.log('');
-        console.log(rules);
-        console.log('');
+        emit('[Post-Compaction Context Re-injection]');
+        emit('');
+        emit(rules);
+        emit('');
       }
     }
   } catch {}
@@ -45,11 +59,10 @@ async function main() {
     try {
       // better-sqlite3 via the shared resolver (env → bare → vendor → plugin → APPDATA/npm);
       // drops the fragile ../../mcp-session-history relative path that fails on clean installs (issue #7).
-      const { requireBetterSqlite3 } = require('./_sqlite');
-      const Database = requireBetterSqlite3();
-      if (Database && fs.existsSync(DB_PATH)) {
-        const db = new Database(DB_PATH, { readonly: true });
-        const projectId = process.env.MULTITERMINAL_PROJECT_ID || null;
+      const Database = requireDb();
+      if (Database && _fs.existsSync(dbPath)) {
+        const db = new Database(dbPath, { readonly: true });
+        const projectId = env.MULTITERMINAL_PROJECT_ID || null;
 
         const projectFilter = projectId ? ' AND project_id = ?' : '';
         const params = projectId ? [terminalName, projectId] : [terminalName];
@@ -62,9 +75,9 @@ async function main() {
         `).get(...params);
 
         if (task) {
-          console.log(`## Active Task: ${task.title} [${task.id}]`);
+          emit(`## Active Task: ${task.title} [${task.id}]`);
           if (task.continuation_notes) {
-            console.log(`**Continuation Notes:** ${task.continuation_notes}`);
+            emit(`**Continuation Notes:** ${task.continuation_notes}`);
           }
           if (task.checklist_json && task.checklist_json !== '[]') {
             try {
@@ -73,10 +86,10 @@ async function main() {
               const testing = items.filter(i => i.status === 'testing').length;
               const coding = items.filter(i => i.status === 'coding').length;
               const pending = items.filter(i => i.status === 'pending').length;
-              console.log(`**Checklist:** ${done}/${items.length} done, ${testing} testing, ${coding} coding, ${pending} pending`);
+              emit(`**Checklist:** ${done}/${items.length} done, ${testing} testing, ${coding} coding, ${pending} pending`);
             } catch {}
           }
-          console.log('');
+          emit('');
         }
         db.close();
       }
@@ -85,10 +98,25 @@ async function main() {
 
   // 3. Remind identity
   if (terminalName) {
-    console.log(`You are ${terminalName}. Continue working on your active task.`);
+    emit(`You are ${terminalName}. Continue working on your active task.`);
   }
 
-  process.exit(0);
+  return { exitCode: 0, stdout: out.length ? out.join('\n') + '\n' : '' };
 }
 
-main().catch(() => process.exit(0));
+module.exports = { run };
+
+// ── CLI shim (standalone invocation — preserves exact prior behavior) ─
+if (require.main === module) {
+  (async () => {
+    // Drain stdin for pipe compatibility (the hook has always ignored its body).
+    let input = '';
+    for await (const chunk of process.stdin) {
+      input += chunk;
+    }
+    let out = { exitCode: 0 };
+    try { out = run({}, {}); } catch { out = { exitCode: 0 }; }
+    if (out && out.stdout) process.stdout.write(out.stdout);
+    process.exit((out && out.exitCode) || 0);
+  })().catch(() => process.exit(0));
+}
