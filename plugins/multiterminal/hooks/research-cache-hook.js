@@ -78,45 +78,41 @@ function truncateContent(text, maxLen = 4000) {
 
 // ── Main ─────────────────────────────────────────────────────────────
 
-async function main() {
-  let input = '';
-  for await (const chunk of process.stdin) {
-    input += chunk;
-  }
+// ── Core (dispatcher-callable) ───────────────────────────────────────
+// Parsed hookData in (CLI shim reads stdin). Injectable httpRequest + env so the
+// cache-lookup (Pre) and auto-save (Post) paths are unit-testable with a stubbed
+// REST client — no live calls (ticket 42c91001). SELF-GATES via extractQuery():
+// any non-Web tool yields '' → short-circuit, so a matcher-blind dispatch on
+// Pre/PostToolUse is safe. Returns {exitCode:0, stdout?}; the Pre cache-hit
+// stdout has NO trailing newline (byte-identical to process.stdout.write).
+async function run(hookData, deps = {}) {
+  const _httpRequest = deps.httpRequest || httpRequest;
+  const env = deps.env || process.env;
 
-  let hookData;
-  try {
-    hookData = JSON.parse(input);
-  } catch {
-    process.exit(0);
-    return;
-  }
-
-  const toolName = hookData.tool_name;
-  const toolInput = hookData.tool_input || {};
-  const toolOutput = hookData.tool_output; // undefined for PreToolUse, present for PostToolUse
+  const toolName = hookData && hookData.tool_name;
+  const toolInput = (hookData && hookData.tool_input) || {};
+  const toolOutput = hookData ? hookData.tool_output : undefined; // undefined for Pre, present for Post
 
   const isPost = toolOutput !== undefined;
-
   if (isPost) {
-    await handlePostToolUse(toolName, toolInput, toolOutput);
-  } else {
-    await handlePreToolUse(toolName, toolInput);
+    return handlePostToolUse(toolName, toolInput, toolOutput, _httpRequest, env);
   }
+  return handlePreToolUse(toolName, toolInput, _httpRequest);
 }
+
+module.exports = { run };
 
 // ── PreToolUse: Check cache before searching ─────────────────────────
 
-async function handlePreToolUse(toolName, toolInput) {
+async function handlePreToolUse(toolName, toolInput, _httpRequest) {
   const query = extractQuery(toolName, toolInput);
   if (!query || query.length < 5) {
     // Too short to meaningfully cache-check
-    process.exit(0);
-    return;
+    return { exitCode: 0 };
   }
 
   try {
-    const result = await httpRequest('GET',
+    const result = await _httpRequest('GET',
       `/api/knowledge/research-cache?query=${encodeURIComponent(query)}`);
 
     if (result && result.hit) {
@@ -137,22 +133,21 @@ async function handlePreToolUse(toolName, toolInput) {
       }
 
       // Output as context — don't block the tool
-      process.stdout.write(msg);
+      return { exitCode: 0, stdout: msg };
     }
   } catch {
     // Fail open — don't interfere with the search
   }
 
-  process.exit(0);
+  return { exitCode: 0 };
 }
 
 // ── PostToolUse: Auto-save research results ──────────────────────────
 
-async function handlePostToolUse(toolName, toolInput, toolOutput) {
+async function handlePostToolUse(toolName, toolInput, toolOutput, _httpRequest, env) {
   const query = extractQuery(toolName, toolInput);
   if (!query || query.length < 5) {
-    process.exit(0);
-    return;
+    return { exitCode: 0 };
   }
 
   // Parse tool output
@@ -165,25 +160,23 @@ async function handlePostToolUse(toolName, toolInput, toolOutput) {
 
   // Skip empty or error results
   if (!outputText || outputText.length < 50) {
-    process.exit(0);
-    return;
+    return { exitCode: 0 };
   }
 
   // Skip error responses
   if (outputText.startsWith('Error:') || outputText.startsWith('Request failed')) {
-    process.exit(0);
-    return;
+    return { exitCode: 0 };
   }
 
   try {
-    const agentName = process.env.MULTITERMINAL_NAME || 'unknown';
+    const agentName = env.MULTITERMINAL_NAME || 'unknown';
     const sourceUrl = toolInput.url || toolInput.query || '';
 
     // Build a title from the query
     let title = query;
     if (title.length > 120) title = title.substring(0, 120) + '...';
 
-    await httpRequest('POST', '/api/knowledge/research-cache', {
+    await _httpRequest('POST', '/api/knowledge/research-cache', {
       query: query,
       title: title,
       content: truncateContent(outputText),
@@ -195,7 +188,26 @@ async function handlePostToolUse(toolName, toolInput, toolOutput) {
     // Fail silently — don't break the agent's flow
   }
 
-  process.exit(0);
+  return { exitCode: 0 };
 }
 
-main().catch(() => process.exit(0));
+// ── CLI shim (standalone invocation — preserves exact prior behavior) ─
+if (require.main === module) {
+  (async () => {
+    let input = '';
+    for await (const chunk of process.stdin) {
+      input += chunk;
+    }
+    let hookData;
+    try {
+      hookData = JSON.parse(input);
+    } catch {
+      process.exit(0);
+      return;
+    }
+    let out = { exitCode: 0 };
+    try { out = await run(hookData, {}); } catch { out = { exitCode: 0 }; }
+    if (out && out.stdout) process.stdout.write(out.stdout);
+    process.exit((out && out.exitCode) || 0);
+  })().catch(() => process.exit(0));
+}

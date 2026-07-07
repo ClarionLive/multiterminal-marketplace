@@ -1,0 +1,7 @@
+[
+  { "name": "pre-non-web-tool", "stdin": { "tool_name": "Read", "tool_input": {} } },
+  { "name": "pre-short-query", "stdin": { "tool_name": "WebSearch", "tool_input": { "query": "hi" } } },
+  { "name": "post-short-output", "stdin": { "tool_name": "WebSearch", "tool_input": { "query": "longenough" }, "tool_output": "x" } },
+  { "name": "post-error-output", "stdin": { "tool_name": "WebSearch", "tool_input": { "query": "longenough" }, "tool_output": "Error: something went wrong and this text is padded well past fifty characters" } },
+  { "name": "malformed-json", "stdin": "not json" }
+]

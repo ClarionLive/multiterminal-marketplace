@@ -42,7 +42,8 @@ const TABLE = {
     { name: 'activity-hook', mod: './activity-hook.js', head: 'async' },
     // ask-user-relay self-gates on tool_name==='AskUserQuestion' → matcher-blind safe.
     { name: 'ask-user-relay-hook', mod: './ask-user-relay-hook.js', head: 'sync' },
-    // fan-out: research-cache (sync) per matcher
+    // research-cache self-gates via extractQuery (non-Web tool → '' → no-op).
+    { name: 'research-cache-hook', mod: './research-cache-hook.js', head: 'sync' },
   ],
   PostToolUse: [
     { name: 'activity-hook', mod: './activity-hook.js', head: 'async' },
@@ -51,7 +52,8 @@ const TABLE = {
     // context-threshold: no matcher in hooks.json (fires on all PostToolUse),
     // self-gates on the statusline pct — correct scope for a blanket dispatch.
     { name: 'context-threshold-hook', mod: './context-threshold-hook.js', head: 'sync' },
-    // fan-out: active-context (sync), pipeline-trigger (sync), research-cache (sync)
+    { name: 'research-cache-hook', mod: './research-cache-hook.js', head: 'sync' },
+    // fan-out (B′, table-matcher): active-context, pipeline-trigger
   ],
   PostToolUseFailure: [
     { name: 'activity-hook', mod: './activity-hook.js', head: 'async' },
