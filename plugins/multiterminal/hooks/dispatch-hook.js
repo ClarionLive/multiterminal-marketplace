@@ -39,14 +39,20 @@ const TABLE = {
   PreToolUse: [
     { name: 'safety-hook', mod: './safety-hook.js', head: 'sync' },
     { name: 'task-to-agent-hook', mod: './task-to-agent-hook.js', head: 'sync' },
-    { name: 'activity-hook', mod: './activity-hook.js', head: 'async' },
+    // activity's SKIP_TOOLS is a BLACKLIST (records every non-skipped tool), so
+    // to preserve its hooks.json scope it carries a table-matcher (B′); otherwise
+    // matcher-blind dispatch would log WebSearch/MCP tools it never logged before.
+    { name: 'activity-hook', mod: './activity-hook.js', head: 'async', matcher: 'Edit|Write|Bash|Task' },
     // ask-user-relay self-gates on tool_name==='AskUserQuestion' → matcher-blind safe.
     { name: 'ask-user-relay-hook', mod: './ask-user-relay-hook.js', head: 'sync' },
     // research-cache self-gates via extractQuery (non-Web tool → '' → no-op).
     { name: 'research-cache-hook', mod: './research-cache-hook.js', head: 'sync' },
   ],
   PostToolUse: [
-    { name: 'activity-hook', mod: './activity-hook.js', head: 'async' },
+    // Same B′ table-matcher as PreToolUse — preserve activity's Edit|Write|Bash|Task scope.
+    { name: 'activity-hook', mod: './activity-hook.js', head: 'async', matcher: 'Edit|Write|Bash|Task' },
+    // commentary self-gates precisely via extractEvent (fires only on the union of
+    // its matched tools), so it stays matcher-blind — no table-matcher needed.
     { name: 'commentary-hook', mod: './commentary-hook.js', head: 'async' },
     { name: 'inbox-check-hook', mod: './inbox-check-hook.js', head: 'sync' },
     // context-threshold: no matcher in hooks.json (fires on all PostToolUse),
@@ -128,7 +134,7 @@ const STANDALONE = {
   'project-context-hook':
     'SessionStart (matcher: none). Once-per-boot; highest-blast path — kept dispatcher-free (ruling C).',
   'session-status-hook':
-    'SessionStart|SessionEnd (matcher: startup|resume|clear on start). Once-per-boot; does not self-gate on source — kept dispatcher-free (ruling C).',
+    'standalone, never dispatched; left in original CLI/main form by PM ruling (run()+shim is dispatcher-composability plumbing it does not use; highest-blast boot hook + un-equivalence-testable critical path = zero churn for zero functional gain).',
   'session-compact-hook':
     'SessionStart (matcher: compact). Once-per-compaction; does not self-gate on source — kept dispatcher-free (ruling C).',
 };
