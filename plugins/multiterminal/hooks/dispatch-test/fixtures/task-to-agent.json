@@ -1,0 +1,8 @@
+[
+  { "name": "not-task-passthrough", "stdin": { "tool_name": "Bash", "tool_input": { "command": "ls" } } },
+  { "name": "task-team-name-passthrough", "stdin": { "tool_name": "Task", "tool_input": { "team_name": "team-abc", "name": "Coder", "description": "implement X", "subagent_type": "general-purpose" } } },
+  { "name": "task-explore-passthrough", "stdin": { "tool_name": "Task", "tool_input": { "subagent_type": "Explore", "description": "look around the repo" } } },
+  { "name": "task-generalpurpose-passthrough", "stdin": { "tool_name": "Task", "tool_input": { "subagent_type": "general-purpose", "name": "Y", "prompt": "do the thing" } } },
+  { "name": "task-no-input", "stdin": { "tool_name": "Task" } },
+  { "name": "malformed-json", "stdin": "not json at all" }
+]

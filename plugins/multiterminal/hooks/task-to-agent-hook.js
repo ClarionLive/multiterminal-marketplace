@@ -117,63 +117,57 @@ function callApi(apiPath, method, body) {
   });
 }
 
-async function main() {
-  let input = '';
-  for await (const chunk of process.stdin) {
-    input += chunk;
-  }
+// ── Core (dispatcher-callable) ───────────────────────────────────────
+// Decision logic with injectable side-effect deps (callApi / file writers /
+// log / redirectTypes) so dispatch-hook.js can run it in-process and tests can
+// stub the real HTTP spawn (ticket 42c91001). Returns the same {exitCode,
+// stdout, stderr} the standalone hook produced. NOTE: REDIRECT_TYPES is [] in
+// production, so the exit-2 redirect path is currently DORMANT (every live
+// Task passes through with exit 0); the path is retained + testable for when
+// REDIRECT_TYPES is repopulated.
+async function run(hookData, deps = {}) {
+  const _callApi = deps.callApi || callApi;
+  const _writePendingDescription = deps.writePendingDescription || writePendingDescription;
+  const _writeTeamSpawner = deps.writeTeamSpawner || writeTeamSpawner;
+  const _log = deps.log || log;
+  const _redirectTypes = deps.redirectTypes || REDIRECT_TYPES;
 
-  let hookData;
-  try {
-    hookData = JSON.parse(input);
-  } catch (err) {
-    log(`PARSE ERROR: ${err.message}`);
-    // Can't parse — let the tool proceed
-    process.exit(0);
-    return;
-  }
-
-  const toolName = hookData.tool_name;
-  log(`HOOK FIRED: tool=${toolName}`);
+  const data = hookData || {};
+  const toolName = data.tool_name;
+  _log(`HOOK FIRED: tool=${toolName}`);
 
   // Only intercept Task tool calls
   if (toolName !== 'Task') {
-    process.exit(0);
-    return;
+    return { exitCode: 0 };
   }
 
   // Parse tool input
-  const toolInput = hookData.tool_input || hookData.input || {};
+  const toolInput = data.tool_input || data.input || {};
   const subagentType = toolInput.subagent_type || '';
   const agentName = toolInput.name || toolInput.description || 'Agent';
   const prompt = toolInput.prompt || '';
   const spawnerName = process.env.MULTITERMINAL_NAME || 'Claude';
 
-  log(`TASK TOOL: subagent_type=${subagentType}, name=${agentName}, team_name=${toolInput.team_name || '(none)'}, prompt=${prompt.substring(0, 100)}...`);
+  _log(`TASK TOOL: subagent_type=${subagentType}, name=${agentName}, team_name=${toolInput.team_name || '(none)'}, prompt=${prompt.substring(0, 100)}...`);
 
   // Let native team agent spawns pass through (team_name = native agent team)
   if (toolInput.team_name) {
-    log(`PASS-THROUGH: Native team agent spawn (team_name=${toolInput.team_name})`);
-    // Write description so TeamWatcherService can pick it up via tracking
-    writePendingDescription(toolInput.description || '', toolInput.name || '', subagentType || 'general-purpose');
-    // Write team→spawner mapping so TeamWatcherService knows which terminal owns this team
-    writeTeamSpawner(toolInput.team_name, spawnerName);
-    process.exit(0);
-    return;
+    _log(`PASS-THROUGH: Native team agent spawn (team_name=${toolInput.team_name})`);
+    _writePendingDescription(toolInput.description || '', toolInput.name || '', subagentType || 'general-purpose');
+    _writeTeamSpawner(toolInput.team_name, spawnerName);
+    return { exitCode: 0 };
   }
 
   // Only redirect general-purpose agents
-  if (!REDIRECT_TYPES.includes(subagentType)) {
-    log(`PASS-THROUGH: ${subagentType} is not redirected`);
-    // Write description to pending file so subagent-office-hook can pick it up
-    writePendingDescription(toolInput.description || '', toolInput.name || '', subagentType);
-    process.exit(0);
-    return;
+  if (!_redirectTypes.includes(subagentType)) {
+    _log(`PASS-THROUGH: ${subagentType} is not redirected`);
+    _writePendingDescription(toolInput.description || '', toolInput.name || '', subagentType);
+    return { exitCode: 0 };
   }
 
   // Spawn via AgentProcess REST API
-  log(`REDIRECTING to AgentProcess: ${agentName}`);
-  const result = await callApi('/api/spawn/agent', 'POST', {
+  _log(`REDIRECTING to AgentProcess: ${agentName}`);
+  const result = await _callApi('/api/spawn/agent', 'POST', {
     agentName: agentName,
     initialPrompt: prompt,
     spawnerName: spawnerName,
@@ -182,21 +176,48 @@ async function main() {
   });
 
   if (result.ok) {
-    log(`SPAWN SUCCESS: ${agentName} (PID: ${result.data.processId})`);
-    // Output message that the agent will see
+    _log(`SPAWN SUCCESS: ${agentName} (PID: ${result.data.processId})`);
     // Exit code 2 = block tool; Claude Code reads the reason from stderr
     const msg = `Spawned visible agent "${agentName}" via AgentProcess (PID: ${result.data.processId}). The conversation is live in the Agent Panel — the user can observe and interact. Do NOT retry this Task call.`;
-    process.stderr.write(msg);
-    process.exit(2);
-  } else {
-    // Spawn failed — let the native Task tool proceed as fallback
-    log(`SPAWN FAILED: ${JSON.stringify(result.data)} — falling through to native Task`);
-    process.exit(0);
+    return { exitCode: 2, stderr: msg };
   }
+
+  // Spawn failed — let the native Task tool proceed as fallback
+  _log(`SPAWN FAILED: ${JSON.stringify(result.data)} — falling through to native Task`);
+  return { exitCode: 0 };
 }
 
-main().catch((err) => {
-  log(`HOOK ERROR: ${err.message}`);
-  // On error, let the tool proceed
-  process.exit(0);
-});
+module.exports = { run };
+
+// ── CLI shim (standalone invocation — preserves exact prior behavior) ─
+if (require.main === module) {
+  (async () => {
+    let input = '';
+    for await (const chunk of process.stdin) {
+      input += chunk;
+    }
+
+    let hookData;
+    try {
+      hookData = JSON.parse(input);
+    } catch (err) {
+      log(`PARSE ERROR: ${err.message}`);
+      // Can't parse — let the tool proceed
+      process.exit(0);
+      return;
+    }
+
+    const { exitCode, stdout, stderr } = await run(hookData);
+    if (stdout) {
+      process.stdout.write(stdout);
+    }
+    if (stderr) {
+      process.stderr.write(stderr);
+    }
+    process.exit(exitCode || 0);
+  })().catch((err) => {
+    log(`HOOK ERROR: ${err.message}`);
+    // On error, let the tool proceed
+    process.exit(0);
+  });
+}
