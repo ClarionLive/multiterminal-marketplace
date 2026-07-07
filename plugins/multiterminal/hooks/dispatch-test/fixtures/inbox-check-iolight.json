@@ -1,0 +1,5 @@
+[
+  { "name": "no-name-env", "stdin": "", "argv": ["Stop"], "env": { "MULTITERMINAL_NAME": "" } },
+  { "name": "no-inbox-file", "stdin": "", "argv": ["Stop"], "env": { "MULTITERMINAL_NAME": "zzz-nonexistent-agent-42c91001" } },
+  { "name": "no-inbox-file-posttooluse", "stdin": "", "argv": ["PostToolUse"], "env": { "MULTITERMINAL_NAME": "zzz-nonexistent-agent-42c91001" } }
+]

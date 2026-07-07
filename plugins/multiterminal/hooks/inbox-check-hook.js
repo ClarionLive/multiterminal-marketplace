@@ -19,32 +19,39 @@
 const fs = require('fs');
 const path = require('path');
 
-async function main() {
-  const name = process.env.MULTITERMINAL_NAME;
+// ── Core (dispatcher-callable) ───────────────────────────────────────
+// inbox-check ignores stdin — it reads the file-based inbox using the hook
+// event name (was argv[2]) + MULTITERMINAL_NAME. Deps are injectable (fs / name
+// / inboxPath / hookType) so tests can exercise the read+delete+decision path
+// with an in-memory stub instead of the live inbox (ticket 42c91001). Returns
+// {exitCode, stdout}; sync/decision class — Stop/SubagentStop emit a
+// {decision:'block'} that Claude waits on, so this lands in the SYNC dispatch
+// head under B2, not the async one.
+function run(hookData, opts = {}) {
+  const _fs = opts.fs || fs;
+  const name = opts.name !== undefined ? opts.name : process.env.MULTITERMINAL_NAME;
+  const hookType = opts.hookType || '';
+
   if (!name) {
-    process.exit(0);
-    return;
+    return { exitCode: 0 };
   }
 
-  const inboxPath = path.join(process.env.APPDATA || '', 'multiterminal', 'inbox', name + '.json');
+  const inboxPath = opts.inboxPath
+    || path.join(process.env.APPDATA || '', 'multiterminal', 'inbox', name + '.json');
 
   // Fast path: no inbox file means no messages
-  if (!fs.existsSync(inboxPath)) {
-    process.exit(0);
-    return;
+  if (!_fs.existsSync(inboxPath)) {
+    return { exitCode: 0 };
   }
-
-
 
   // Read and delete inbox file (atomic: read then unlink)
   let raw;
   try {
-    raw = fs.readFileSync(inboxPath, 'utf8');
-    fs.unlinkSync(inboxPath);
+    raw = _fs.readFileSync(inboxPath, 'utf8');
+    _fs.unlinkSync(inboxPath);
   } catch (e) {
     // File may have been consumed by another process
-    process.exit(0);
-    return;
+    return { exitCode: 0 };
   }
 
   // Parse messages
@@ -52,13 +59,11 @@ async function main() {
   try {
     messages = JSON.parse(raw);
   } catch (e) {
-    process.exit(0);
-    return;
+    return { exitCode: 0 };
   }
 
   if (!Array.isArray(messages) || messages.length === 0) {
-    process.exit(0);
-    return;
+    return { exitCode: 0 };
   }
 
   // Format messages
@@ -73,29 +78,29 @@ async function main() {
 
   if (lines.length === 1) {
     // No valid messages after filtering
-    process.exit(0);
-    return;
+    return { exitCode: 0 };
   }
 
   const formatted = lines.join('\n');
 
-  // Hook type passed as command-line argument (avoids slow stdin reading)
-  const hookType = process.argv[2] || '';
-
-  // Output based on hook type
+  // Stop/SubagentStop: block stopping so Claude processes the messages.
   if (hookType === 'Stop' || hookType === 'SubagentStop') {
-    // Block stopping so Claude processes the messages
-    const output = {
-      decision: 'block',
-      reason: formatted
-    };
-    console.log(JSON.stringify(output));
-  } else {
-    // For PostToolUse, PreToolUse, etc. — plain text becomes context
-    console.log(formatted);
+    return { exitCode: 0, stdout: JSON.stringify({ decision: 'block', reason: formatted }) };
   }
+  // For PostToolUse, PreToolUse, etc. — plain text becomes context.
+  return { exitCode: 0, stdout: formatted };
 }
 
-main().catch(() => {
-  process.exit(0);
-});
+module.exports = { run };
+
+// ── CLI shim (standalone invocation — preserves exact prior behavior) ─
+if (require.main === module) {
+  // Hook type passed as command-line argument (avoids slow stdin reading);
+  // inbox-check historically ignores stdin.
+  const hookType = process.argv[2] || '';
+  const { exitCode, stdout } = run({}, { hookType });
+  if (stdout) {
+    console.log(stdout);
+  }
+  process.exit(exitCode || 0);
+}
