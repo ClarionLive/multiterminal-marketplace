@@ -1,0 +1,4 @@
+[
+  { "name": "non-askuserquestion-tool", "stdin": { "tool_name": "Read", "tool_input": {} } },
+  { "name": "malformed-json", "stdin": "not json" }
+]

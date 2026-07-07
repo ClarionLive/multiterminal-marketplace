@@ -40,7 +40,9 @@ const TABLE = {
     { name: 'safety-hook', mod: './safety-hook.js', head: 'sync' },
     { name: 'task-to-agent-hook', mod: './task-to-agent-hook.js', head: 'sync' },
     { name: 'activity-hook', mod: './activity-hook.js', head: 'async' },
-    // fan-out: ask-user-relay (sync), research-cache (sync) per matcher
+    // ask-user-relay self-gates on tool_name==='AskUserQuestion' → matcher-blind safe.
+    { name: 'ask-user-relay-hook', mod: './ask-user-relay-hook.js', head: 'sync' },
+    // fan-out: research-cache (sync) per matcher
   ],
   PostToolUse: [
     { name: 'activity-hook', mod: './activity-hook.js', head: 'async' },
@@ -68,6 +70,10 @@ const TABLE = {
     { name: 'desktop-presence-hook', mod: './desktop-presence-hook.js', head: 'async' },
     { name: 'context-threshold-hook', mod: './context-threshold-hook.js', head: 'sync' },
     // fan-out: inbox-check (sync)
+  ],
+  Elicitation: [
+    // elicitation-relay self-gates on mode==='form' → matcher-blind safe.
+    { name: 'elicitation-relay-hook', mod: './elicitation-relay-hook.js', head: 'sync' },
   ],
   Notification: [
     { name: 'notification-hook', mod: './notification-hook.js', head: 'async' },

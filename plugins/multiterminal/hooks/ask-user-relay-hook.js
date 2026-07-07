@@ -21,30 +21,47 @@ function sleep(ms) {
   return new Promise(r => setTimeout(r, ms));
 }
 
-let input = '';
-process.stdin.setEncoding('utf8');
-process.stdin.on('data', chunk => { input += chunk; });
-process.stdin.on('end', async () => {
-  try {
-    const event = JSON.parse(input);
+// ── Core (dispatcher-callable) ───────────────────────────────────────
+// Takes the parsed hookData (the CLI shim reads stdin) + injectable deps
+// (fetch / sleep / env / now / apiBase / pollInterval / timeout) so the
+// remote-mode → store → send → poll → decision path is unit-testable with a
+// stubbed fetch + instant sleep + fixed clock — no live REST calls (ticket
+// 42c91001). Self-gates on tool_name!=='AskUserQuestion' BEFORE any fetch, so a
+// matcher-blind dispatch is safe. SYNC/decision class: on a remote answer it
+// returns a {decision:'block'} that Claude waits on. Returns {exitCode, stdout?,
+// stderr?}; stdout has NO trailing newline (byte-identical to process.stdout.write).
+async function run(hookData, deps = {}) {
+  const _fetch = deps.fetch || fetch;
+  const _sleep = deps.sleep || sleep;
+  const env = deps.env || process.env;
+  const nowFn = typeof deps.now === 'function' ? deps.now : () => Date.now();
+  const apiBase = deps.apiBase || MT_API;
+  const agentName = deps.agentName || env.MULTITERMINAL_NAME || 'unknown';
+  const pollInterval = deps.pollInterval != null ? deps.pollInterval : POLL_INTERVAL;
+  const timeout = deps.timeout != null ? deps.timeout : TIMEOUT;
 
-    // Only handle AskUserQuestion
+  try {
+    const event = hookData || {};
+
+    // Only handle AskUserQuestion (self-gate before any I/O)
     if (event.tool_name !== 'AskUserQuestion') {
-      process.exit(0);
+      return { exitCode: 0 };
     }
 
-    // Check remote mode — if off, fall through to terminal prompt
+    // Check remote mode — if explicitly off, fall through to terminal prompt.
+    // (Non-200 / unreachable behavior preserved verbatim: unreachable → return;
+    // reachable-but-not-ok → proceed as before.)
     try {
-      const modeRes = await fetch(`${MT_API}/api/remote-mode`);
+      const modeRes = await _fetch(`${apiBase}/api/remote-mode`);
       if (modeRes.ok) {
         const modeData = await modeRes.json();
         if (!modeData.remote_mode) {
-          process.exit(0);
+          return { exitCode: 0 };
         }
       }
     } catch {
       // API not reachable — fall through to terminal
-      process.exit(0);
+      return { exitCode: 0 };
     }
 
     const toolInput = event.tool_input || {};
@@ -53,7 +70,7 @@ process.stdin.on('end', async () => {
     // { question, header, options: [{label, description}], multiSelect }
     const questions = toolInput.questions || [];
     if (questions.length === 0) {
-      process.exit(0);
+      return { exitCode: 0 };
     }
 
     // For now, handle the first question (most common case)
@@ -63,7 +80,7 @@ process.stdin.on('end', async () => {
     const options = (q.options || []).map(o => typeof o === 'string' ? o : o.label);
     const descriptions = (q.options || []).map(o => typeof o === 'string' ? '' : (o.description || ''));
 
-    const elicitationId = `ask_${Date.now()}`;
+    const elicitationId = `ask_${nowFn()}`;
 
     // Build schema from question + options
     let schema;
@@ -98,12 +115,12 @@ process.stdin.on('end', async () => {
     }
 
     // Store as elicitation via REST API
-    const storeRes = await fetch(`${MT_API}/api/elicitations`, {
+    const storeRes = await _fetch(`${apiBase}/api/elicitations`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         elicitationId,
-        agentName: AGENT_NAME,
+        agentName,
         mcpServerName: 'claude-code',
         message: question,
         schemaJson: JSON.stringify(schema)
@@ -111,18 +128,17 @@ process.stdin.on('end', async () => {
     });
 
     if (!storeRes.ok) {
-      process.stderr.write(`[ask-user-relay] Failed to store: ${storeRes.status}\n`);
-      process.exit(0);
+      return { exitCode: 0, stderr: `[ask-user-relay] Failed to store: ${storeRes.status}\n` };
     }
 
     // Send to ClaudeRemote with elicitation format
     const displayMsg = header ? `**${header}:** ${question}` : question;
     const formMessage = `[ELICITATION_REQUEST:${elicitationId}:claude-code]\n${displayMsg}\n[SCHEMA]\n${JSON.stringify(schema)}`;
-    await fetch(`${MT_API}/api/messaging/send`, {
+    await _fetch(`${apiBase}/api/messaging/send`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        fromTerminalId: AGENT_NAME,
+        fromTerminalId: agentName,
         to: 'ClaudeRemote',
         message: formMessage,
         priority: 'high'
@@ -131,12 +147,12 @@ process.stdin.on('end', async () => {
 
     // Poll for response
     let elapsed = 0;
-    while (elapsed < TIMEOUT) {
-      await sleep(POLL_INTERVAL);
-      elapsed += POLL_INTERVAL;
+    while (elapsed < timeout) {
+      await _sleep(pollInterval);
+      elapsed += pollInterval;
 
       try {
-        const res = await fetch(`${MT_API}/api/elicitations/${elicitationId}/response`);
+        const res = await _fetch(`${apiBase}/api/elicitations/${elicitationId}/response`);
         if (res.ok) {
           const data = await res.json();
           if (data.answered) {
@@ -147,15 +163,17 @@ process.stdin.on('end', async () => {
 
             if (data.action === 'decline' || data.action === 'cancel') {
               // User declined — fall through to terminal prompt (exit 0, no stdout = allow)
-            } else {
-              // Block tool and provide the answer in the reason.
-              // Claude reads the block reason and uses it as the user's response.
-              process.stdout.write(JSON.stringify({
+              return { exitCode: 0 };
+            }
+            // Block tool and provide the answer in the reason.
+            // Claude reads the block reason and uses it as the user's response.
+            return {
+              exitCode: 0,
+              stdout: JSON.stringify({
                 decision: 'block',
                 reason: `The user answered this question remotely via their phone. Their answer is: "${answer}". Use this as the user's response and continue your work.`
-              }));
-            }
-            process.exit(0);
+              })
+            };
           }
         }
       } catch {
@@ -164,9 +182,33 @@ process.stdin.on('end', async () => {
     }
 
     // Timeout — fall through to terminal prompt
-    process.exit(0);
+    return { exitCode: 0 };
   } catch (err) {
-    process.stderr.write(`[ask-user-relay] Error: ${err.message}\n`);
-    process.exit(0);
+    return { exitCode: 0, stderr: `[ask-user-relay] Error: ${err.message}\n` };
   }
-});
+}
+
+module.exports = { run };
+
+// ── CLI shim (standalone invocation — preserves exact prior behavior) ─
+if (require.main === module) {
+  let input = '';
+  process.stdin.setEncoding('utf8');
+  process.stdin.on('data', chunk => { input += chunk; });
+  process.stdin.on('end', async () => {
+    let hookData;
+    try { hookData = JSON.parse(input); } catch (err) {
+      // Original parsed inside the try and reported a generic error on failure.
+      process.stderr.write(`[ask-user-relay] Error: ${err.message}\n`);
+      process.exit(0);
+      return;
+    }
+    let out = { exitCode: 0 };
+    try { out = await run(hookData, {}); } catch (err) {
+      out = { exitCode: 0, stderr: `[ask-user-relay] Error: ${err.message}\n` };
+    }
+    if (out && out.stdout) process.stdout.write(out.stdout);
+    if (out && out.stderr) process.stderr.write(out.stderr);
+    process.exit((out && out.exitCode) || 0);
+  });
+}

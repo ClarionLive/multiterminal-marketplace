@@ -1,0 +1,5 @@
+[
+  { "name": "non-form-mode", "stdin": { "mode": "text" } },
+  { "name": "form-mode-no-schema", "stdin": { "mode": "form" } },
+  { "name": "malformed-json", "stdin": "not json" }
+]
