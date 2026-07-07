@@ -109,6 +109,15 @@ async function main() {
     ok(nonNode.length === 1 && nonNode[0].command === 'powershell',
       'T6 exactly 1 non-node leaf (SessionStart powershell echo) stays standalone, not dispatched');
 
+    // Unwired hooks: files present in hooks/ but NOT registered in hooks.json — they are
+    // out of dispatcher scope. Assert (don't just note) their absence from the hooks.json
+    // leaf-set, so if someone wires one later WITHOUT adding it to the TABLE, T6 fails loudly.
+    const allJsonNames = new Set(Object.values(jsonLeaves).flat().map((j) => j.name));
+    for (const unwired of ['profile-status-hook', 'stop-relay-hook', 'pool-context']) {
+      ok(!allJsonNames.has(unwired),
+        `T6 unwired hook '${unwired}' is absent from hooks.json (out of dispatcher scope — must be added to TABLE if ever wired)`);
+    }
+
     // Classification: every TABLE leaf is sync XOR async AND matches its hooks.json async flag.
     let covered = 0;
     for (const [event, leaves] of Object.entries(TABLE)) {
