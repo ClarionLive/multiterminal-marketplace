@@ -26,20 +26,16 @@
 const path = require('path');
 
 // leaf spec: { name, mod (require path) OR run (fn, for tests), head: 'sync'|'async' }
+//
+// SessionStart is deliberately ABSENT from this table — see STANDALONE below.
+// Ruling C (42c91001): the dispatcher stays MATCHER-BLIND and collapses only the
+// high-frequency, matcher-safe events where the per-tool-call latency win lives
+// (PreToolUse/PostToolUse/UserPromptSubmit/Stop/...). SessionStart fires once per
+// boot (negligible spawn saving) and is the highest-blast-radius event, so its
+// matcher-scoped leaves stay as individual hooks.json entries, byte-identical and
+// equivalence-harness-proven, rather than taking behavior-change risk for ~zero
+// benefit.
 const TABLE = {
-  SessionStart: [
-    // project-context self-gates on hookType==='SessionStart' and is wired with
-    // NO matcher in hooks.json (fires on every start incl. compact) — its correct
-    // scope, so a blanket SessionStart dispatch is right for it.
-    { name: 'project-context-hook', mod: './project-context-hook.js', head: 'sync' },
-    // fan-out: session-status (sync, matcher startup|resume|clear),
-    //          session-compact (sync, matcher compact).
-    // MATCHER NOTE (surfaced to PM): session-status/session-compact are matcher-
-    // SCOPED in hooks.json and do NOT self-gate on hookData.source, so a per-event
-    // (matcher-blind) dispatch would fire them on the wrong starts. They stay
-    // UNWIRED pending the collapse-time matcher-handling ruling. The powershell
-    // echo (startup|resume|clear) is non-node and stays standalone regardless.
-  ],
   PreToolUse: [
     { name: 'safety-hook', mod: './safety-hook.js', head: 'sync' },
     { name: 'task-to-agent-hook', mod: './task-to-agent-hook.js', head: 'sync' },
@@ -77,13 +73,49 @@ const TABLE = {
     { name: 'notification-hook', mod: './notification-hook.js', head: 'async' },
   ],
   // Remaining events (SessionEnd/PreCompact/Elicitation/SubagentStart/
-  // TeammateIdle) wired during fan-out; SessionStart partially wired above.
+  // TeammateIdle) wired during fan-out. SessionStart is intentionally absent
+  // (its trio is standalone — see STANDALONE).
+};
+
+// STANDALONE ALLOWLIST — hooks.json node leaves deliberately NOT collapsed into
+// the dispatcher; each stays an individual matcher-scoped hooks.json entry,
+// byte-identical + equivalence-proven. Ruling C (42c91001): SessionStart fires
+// once per boot (no per-tool-call latency to win) and is the highest-blast-radius
+// path, so the dispatcher stays OUT of the boot path. Every entry MUST carry a
+// reason. T6 asserts each hooks.json node leaf is in EXACTLY ONE of {TABLE
+// (matcher-blind), TABLE (with table-matcher), STANDALONE}. The 1 powershell
+// SessionStart echo is non-node and inherently standalone (never dispatchable).
+const STANDALONE = {
+  'project-context-hook':
+    'SessionStart (matcher: none). Once-per-boot; highest-blast path — kept dispatcher-free (ruling C).',
+  'session-status-hook':
+    'SessionStart|SessionEnd (matcher: startup|resume|clear on start). Once-per-boot; does not self-gate on source — kept dispatcher-free (ruling C).',
+  'session-compact-hook':
+    'SessionStart (matcher: compact). Once-per-compaction; does not self-gate on source — kept dispatcher-free (ruling C).',
 };
 
 function resolveRun(leaf) {
   if (typeof leaf.run === 'function') return leaf.run;
   // eslint-disable-next-line global-require
   return require(path.join(__dirname, leaf.mod)).run;
+}
+
+// B′ (42c91001): a dispatched leaf MAY carry a `matcher` — the exact hooks.json
+// matcher string it replaced (e.g. active-context / pipeline-trigger). The
+// dispatcher is otherwise matcher-BLIND (leaves self-gate); a table-matcher lets
+// a matcher-RELIANT leaf collapse in-process with zero added spawns while keeping
+// its original scope. Anchored full-match against hookData.tool_name, mirroring
+// Claude Code's own matcher semantics. Leaves with no `matcher` always run.
+function matcherMatches(leaf, hookData) {
+  if (!leaf.matcher) return true;
+  const toolName = (hookData && hookData.tool_name) || '';
+  try {
+    return new RegExp('^(?:' + leaf.matcher + ')$').test(toolName);
+  } catch (e) {
+    // A malformed matcher must never silently swallow the leaf; run it (the leaf
+    // still self-gates internally). Surfaced by T6 matcher-parity in practice.
+    return true;
+  }
 }
 
 // A sync leaf's stdout is "authoritative" (ends the chain) when it is a
@@ -102,8 +134,8 @@ async function dispatch(eventName, head, hookData, table = TABLE) {
   const opts = { hookType: eventName };
 
   if (head === 'async') {
-    // Fire-and-forget: run all, ignore output AND errors, never block.
-    await Promise.allSettled(leaves.map((l) => {
+    // Fire-and-forget: run all (matcher-gated), ignore output AND errors, never block.
+    await Promise.allSettled(leaves.filter((l) => matcherMatches(l, hookData)).map((l) => {
       try { return Promise.resolve(resolveRun(l)(hookData, opts)); } catch (e) { return Promise.resolve(); }
     }));
     return { exitCode: 0 };
@@ -112,6 +144,8 @@ async function dispatch(eventName, head, hookData, table = TABLE) {
   // SYNC head: blockers + decision emitters, in table order.
   let stdout = '';
   for (const leaf of leaves) {
+    // Table-matcher gate (B′): a matcher-reliant leaf only runs on its tools.
+    if (!matcherMatches(leaf, hookData)) continue;
     let res;
     try { res = await resolveRun(leaf)(hookData, opts); } catch (e) { res = { exitCode: 0 }; }
     res = res || {};
@@ -131,7 +165,7 @@ async function dispatch(eventName, head, hookData, table = TABLE) {
   return { exitCode: 0, stdout };
 }
 
-module.exports = { dispatch, TABLE };
+module.exports = { dispatch, TABLE, STANDALONE };
 
 if (require.main === module) {
   (async () => {

@@ -11,7 +11,7 @@ const path = require('path');
 const os = require('os');
 process.env.APPDATA = os.tmpdir(); // isolate any incidental fs writes
 
-const { dispatch, TABLE } = require('../dispatch-hook.js');
+const { dispatch, TABLE, STANDALONE } = require('../dispatch-hook.js');
 
 let passed = 0;
 function ok(cond, msg) { assert.ok(cond, msg); passed++; }
@@ -76,10 +76,10 @@ async function main() {
     console.log('  ✓ T5 advisory stdout accumulates, never blocks/short-circuits');
   }
 
-  // ── T6: routing-table parity vs hooks.json (classification + census + coverage) ──
+  // ── T6: hooks.json accounting — census + classification + matcher-parity + bucket-exclusivity ──
   {
     const cfg = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'hooks.json'), 'utf8'));
-    const jsonLeaves = {}; // event -> [{name, async}]  (node hooks only — the dispatchable set)
+    const jsonLeaves = {}; // event -> [{name, async, matcher}]  (node leaves only)
     let total = 0;
     let node = 0;
     const nonNode = [];
@@ -91,7 +91,7 @@ async function main() {
           if (h.command === 'node') {
             node++;
             const name = path.basename((h.args && h.args[0]) || '').replace(/\.js$/, '');
-            jsonLeaves[event].push({ name, async: h.async === true });
+            jsonLeaves[event].push({ name, async: h.async === true, matcher: block.matcher || '' });
           } else {
             nonNode.push({ event, command: h.command });
           }
@@ -99,27 +99,67 @@ async function main() {
       }
     }
 
-    // Census: 37 dispatchable node leaves + 1 non-node (SessionStart powershell echo) = 38.
-    // POST-COLLAPSE SHAPE (PM-confirmed): the dispatcher owns node leaves only, so the
-    // collapsed hooks.json is 37/37 node leaves routed through dispatch-hook.js (2 entries
-    // per event: sync + async:true) PLUS the 1 powershell echo kept as its own standalone
-    // SessionStart entry = 38 total. The powershell leaf is never dispatched.
+    // Census: 37 node leaves + 1 non-node (SessionStart powershell echo) = 38.
+    // POST-COLLAPSE SHAPE (ruling C, 42c91001): every node leaf is EXACTLY ONE of
+    //   {dispatched matcher-blind} XOR {dispatched with a table-matcher, B′} XOR
+    //   {standalone-allowlisted}. The 1 powershell echo is non-node → inherently
+    //   standalone. High-frequency matcher-safe events collapse into the dispatcher;
+    //   the once-per-boot SessionStart trio stays standalone + individually wired.
     ok(total === 38, `T6 hooks.json total leaf census == 38 (got ${total})`);
-    ok(node === 37, `T6 dispatchable node leaves == 37 (got ${node})`);
+    ok(node === 37, `T6 node leaves == 37 (got ${node})`);
     ok(nonNode.length === 1 && nonNode[0].command === 'powershell',
-      'T6 exactly 1 non-node leaf (SessionStart powershell echo) stays standalone, not dispatched');
+      'T6 exactly 1 non-node leaf (SessionStart powershell echo) — inherently standalone, never dispatched');
 
-    // Unwired hooks: files present in hooks/ but NOT registered in hooks.json — they are
-    // out of dispatcher scope. Assert (don't just note) their absence from the hooks.json
-    // leaf-set, so if someone wires one later WITHOUT adding it to the TABLE, T6 fails loudly.
+    // Unwired hooks: present in hooks/ but NOT registered in hooks.json — assert
+    // absence so wiring one later without TABLE/STANDALONE accounting fails loudly.
     const allJsonNames = new Set(Object.values(jsonLeaves).flat().map((j) => j.name));
     for (const unwired of ['profile-status-hook', 'stop-relay-hook', 'pool-context']) {
       ok(!allJsonNames.has(unwired),
-        `T6 unwired hook '${unwired}' is absent from hooks.json (out of dispatcher scope — must be added to TABLE if ever wired)`);
+        `T6 unwired hook '${unwired}' absent from hooks.json (add to TABLE or STANDALONE if ever wired)`);
+    }
+
+    const tableNames = new Set(Object.values(TABLE).flat().map((l) => l.name));
+    const standaloneNames = new Set(Object.keys(STANDALONE));
+
+    // ── (2) STANDALONE ALLOWLIST: the SessionStart trio, enumerated + reasoned ──
+    ok(standaloneNames.size === 3, `T6 standalone allowlist has exactly 3 node leaves (got ${standaloneNames.size})`);
+    for (const name of standaloneNames) {
+      ok(allJsonNames.has(name), `T6 standalone '${name}' is a real hooks.json node leaf`);
+      ok(STANDALONE[name] && STANDALONE[name].length > 0, `T6 standalone '${name}' carries a reason`);
+      ok(!tableNames.has(name), `T6 standalone '${name}' is NOT also in the dispatcher TABLE (bucket exclusivity)`);
+    }
+
+    // Bucket exclusivity + accounting, per hooks.json leaf OCCURRENCE (an event,name
+    // pair). Each is exactly one of {dispatched, standalone}, or neither-YET
+    // (remaining fan-out — soft now, MUST be empty at the collapse gate).
+    const remaining = [];
+    for (const [event, leaves] of Object.entries(jsonLeaves)) {
+      for (const j of leaves) {
+        const inTable = (TABLE[event] || []).some((l) => l.name === j.name);
+        const inStandalone = standaloneNames.has(j.name);
+        ok(!(inTable && inStandalone), `T6 '${event}/${j.name}' not in BOTH TABLE and STANDALONE`);
+        if (!inTable && !inStandalone) remaining.push(`${event}/${j.name}`);
+      }
+    }
+
+    // ── (1) MATCHER-PARITY (B′): a dispatched leaf carrying a table-matcher must ──
+    // exactly equal the hooks.json matcher it replaced (active-context, pipeline-
+    // trigger). Any drift between the in-table matcher and hooks.json fails loudly.
+    let matcherChecked = 0;
+    for (const [event, leaves] of Object.entries(TABLE)) {
+      for (const leaf of leaves) {
+        if (!leaf.matcher) continue;
+        const matches = (jsonLeaves[event] || []).filter((j) => j.name === leaf.name);
+        ok(matches.length > 0, `T6 table-matcher leaf ${event}/${leaf.name} exists in hooks.json`);
+        for (const m of matches) {
+          ok(m.matcher === leaf.matcher,
+            `T6 matcher-parity ${event}/${leaf.name}: table matcher must equal the hooks.json matcher`);
+          matcherChecked++;
+        }
+      }
     }
 
     // Classification: every TABLE leaf is sync XOR async AND matches its hooks.json async flag.
-    let covered = 0;
     for (const [event, leaves] of Object.entries(TABLE)) {
       for (const leaf of leaves) {
         ok(leaf.head === 'sync' || leaf.head === 'async', `T6 ${event}/${leaf.name} head is sync XOR async`);
@@ -130,14 +170,15 @@ async function main() {
           ok(leaf.head === expected,
             `T6 ${event}/${leaf.name} head '${leaf.head}' == hooks.json async-flag → '${expected}'`);
         }
-        covered += matches.length;
       }
     }
 
     const tableLeaves = Object.values(TABLE).flat().length;
-    console.log(`  ✓ T6 classification correct for all ${tableLeaves} table leaves; census 37 node + 1 powershell = 38`);
-    console.log(`    COVERAGE: ${covered}/${node} node leaves wired in TABLE. Fan-out wires the remaining ${node - covered};`);
-    console.log(`    the collapse gate REQUIRES ${node}/${node} (T6 becomes the completeness check at that point).`);
+    const accounted = node - remaining.length;
+    console.log(`  ✓ T6 classification OK for ${tableLeaves} table leaves; matcher-parity checked ${matcherChecked}; census 37 node + 1 powershell = 38`);
+    console.log(`    ACCOUNTED: ${accounted}/${node} node-leaf occurrences (dispatched ∪ standalone); STANDALONE = ${standaloneNames.size} node + 1 powershell.`);
+    console.log(`    REMAINING fan-out: ${remaining.length}${remaining.length ? ` → ${remaining.sort().join(', ')}` : ''}`);
+    console.log(`    COLLAPSE GATE requires REMAINING == 0 (every node leaf dispatched XOR standalone-allowlisted).`);
   }
 
   console.log(`\ndispatch T-suite: PASS (${passed} assertions)`);
