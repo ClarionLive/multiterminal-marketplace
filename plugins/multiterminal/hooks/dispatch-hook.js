@@ -63,10 +63,18 @@ const TABLE = {
     { name: 'inbox-check-hook', mod: './inbox-check-hook.js', head: 'sync' },
     // fan-out: session-save (sync)
   ],
+  SubagentStart: [
+    // subagent-office self-gates on hook_event_name === 'SubagentStart'.
+    { name: 'subagent-office-hook', mod: './subagent-office-hook.js', head: 'sync' },
+    { name: 'activity-hook', mod: './activity-hook.js', head: 'async' },
+  ],
   SubagentStop: [
+    { name: 'subagent-office-hook', mod: './subagent-office-hook.js', head: 'sync' },
     { name: 'activity-hook', mod: './activity-hook.js', head: 'async' },
     { name: 'inbox-check-hook', mod: './inbox-check-hook.js', head: 'sync' },
-    // fan-out: subagent-office (sync)
+  ],
+  TeammateIdle: [
+    { name: 'subagent-office-hook', mod: './subagent-office-hook.js', head: 'sync' },
   ],
   UserPromptSubmit: [
     { name: 'desktop-presence-hook', mod: './desktop-presence-hook.js', head: 'async' },

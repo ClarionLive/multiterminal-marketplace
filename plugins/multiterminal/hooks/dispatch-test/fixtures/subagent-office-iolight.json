@@ -1,0 +1,4 @@
+[
+  { "name": "unknown-hooktype", "stdin": { "hook_event_name": "SomethingElse", "agent_id": "a1" } },
+  { "name": "malformed-json", "stdin": "not json" }
+]
