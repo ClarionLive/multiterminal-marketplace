@@ -59,9 +59,18 @@ const TABLE = {
     { name: 'activity-hook', mod: './activity-hook.js', head: 'async' },
     { name: 'commentary-hook', mod: './commentary-hook.js', head: 'async' },
   ],
+  SessionEnd: [
+    // session-import self-gates on eventName==='SessionEnd'. (session-status is
+    // the OTHER SessionEnd leaf and is STANDALONE — not dispatched here.)
+    { name: 'session-import-hook', mod: './session-import-hook.js', head: 'sync' },
+  ],
+  PreCompact: [
+    // session-save self-gates on the event (PreCompact always writes).
+    { name: 'session-save-hook', mod: './session-save-hook.js', head: 'sync' },
+  ],
   Stop: [
+    { name: 'session-save-hook', mod: './session-save-hook.js', head: 'sync' },
     { name: 'inbox-check-hook', mod: './inbox-check-hook.js', head: 'sync' },
-    // fan-out: session-save (sync)
   ],
   SubagentStart: [
     // subagent-office self-gates on hook_event_name === 'SubagentStart'.
@@ -77,9 +86,9 @@ const TABLE = {
     { name: 'subagent-office-hook', mod: './subagent-office-hook.js', head: 'sync' },
   ],
   UserPromptSubmit: [
+    { name: 'inbox-check-hook', mod: './inbox-check-hook.js', head: 'sync' },
     { name: 'desktop-presence-hook', mod: './desktop-presence-hook.js', head: 'async' },
     { name: 'context-threshold-hook', mod: './context-threshold-hook.js', head: 'sync' },
-    // fan-out: inbox-check (sync)
   ],
   Elicitation: [
     // elicitation-relay self-gates on mode==='form' → matcher-blind safe.

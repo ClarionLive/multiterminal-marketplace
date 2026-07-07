@@ -40,70 +40,63 @@ const CONTEXT_FILE = path.join(MEMORY_DIR, 'ACTIVE-CONTEXT.md');
 const THROTTLE_FILE = path.join(os.tmpdir(), 'mt-session-save-last.txt');
 const THROTTLE_MS = 30000;
 
-function shouldThrottle() {
+function shouldThrottle(_fs = fs, throttleFile = THROTTLE_FILE, nowMs = Date.now()) {
   try {
-    if (fs.existsSync(THROTTLE_FILE)) {
-      const lastWrite = parseInt(fs.readFileSync(THROTTLE_FILE, 'utf8'), 10);
-      if (Date.now() - lastWrite < THROTTLE_MS) return true;
+    if (_fs.existsSync(throttleFile)) {
+      const lastWrite = parseInt(_fs.readFileSync(throttleFile, 'utf8'), 10);
+      if (nowMs - lastWrite < THROTTLE_MS) return true;
     }
   } catch {}
   return false;
 }
 
-function markWritten() {
-  try { fs.writeFileSync(THROTTLE_FILE, String(Date.now()), 'utf8'); } catch {}
+function markWritten(_fs = fs, throttleFile = THROTTLE_FILE, nowMs = Date.now()) {
+  try { _fs.writeFileSync(throttleFile, String(nowMs), 'utf8'); } catch {}
 }
 
 // ── Main ─────────────────────────────────────────────────────────────
 
-async function main() {
-  // Debug log to verify hook is firing
-  const debugLog = path.join(os.tmpdir(), 'mt-session-save-debug.log');
-  const logLine = (msg) => { try { fs.appendFileSync(debugLog, `${new Date().toISOString()} ${msg}\n`); } catch {} };
-
-  logLine('Hook invoked');
-
-  let input = '';
-  for await (const chunk of process.stdin) {
-    input += chunk;
-  }
-
-  let hookData;
-  try {
-    hookData = JSON.parse(input);
-  } catch (e) {
-    logLine(`JSON parse error: ${e.message}`);
-    process.exit(0);
-    return;
-  }
+// ── Core (dispatcher-callable) ───────────────────────────────────────
+// Parsed hookData in (CLI shim reads stdin). Injectable deps (fetchJson / fs /
+// env / now / nowIso / memoryDir / contextFile / throttleFile / log) so the
+// fetch → buildContext → write-ACTIVE-CONTEXT path is unit-testable with stubs —
+// no live REST call and no real file write (ticket 42c91001). Self-gates on the
+// event (Stop throttled; PreCompact always writes). Side-effect-only (no stdout).
+// Returns {exitCode:0}. The debug trace goes through `log` (diagnostic only).
+async function run(hookData, deps = {}) {
+  const _fs = deps.fs || fs;
+  const env = deps.env || process.env;
+  const _fetchJson = deps.fetchJson || fetchJson;
+  const nowIsoFn = typeof deps.nowIso === 'function' ? deps.nowIso : () => new Date().toISOString();
+  const nowMsFn = typeof deps.now === 'function' ? deps.now : () => Date.now();
+  const memoryDir = deps.memoryDir || MEMORY_DIR;
+  const contextFile = deps.contextFile || CONTEXT_FILE;
+  const throttleFile = deps.throttleFile || THROTTLE_FILE;
+  const logLine = deps.log || (() => {});
 
   const eventName = hookData.hook_event_name || '';
   logLine(`Event: ${eventName}`);
 
-  // For Stop events, throttle to avoid excessive writes
-  if (eventName === 'Stop' && shouldThrottle()) {
+  // For Stop events, throttle to avoid excessive writes.
+  // PreCompact always writes (it's infrequent and critical).
+  if (eventName === 'Stop' && shouldThrottle(_fs, throttleFile, nowMsFn())) {
     logLine('Throttled — skipping');
-    process.exit(0);
-    return;
+    return { exitCode: 0 };
   }
-
-  // PreCompact always writes (it's infrequent and critical)
 
   try {
     // Fetch active tasks from REST API
-    const agentName = process.env.MULTITERMINAL_NAME || '';
+    const agentName = env.MULTITERMINAL_NAME || '';
     logLine(`Agent: ${agentName}`);
-    let tasks = await fetchJson('/api/tasks?status=in_progress');
+    let tasks = await _fetchJson('/api/tasks?status=in_progress');
     if (!tasks) {
       logLine('API returned null — no tasks');
-      process.exit(0);
-      return;
+      return { exitCode: 0 };
     }
 
     const taskList = tasks.tasks || tasks;
     if (!Array.isArray(taskList) || taskList.length === 0) {
-      process.exit(0);
-      return;
+      return { exitCode: 0 };
     }
 
     // Find the active task for this agent (KanbanTask uses subStatus === "active")
@@ -115,36 +108,37 @@ async function main() {
       || taskList[0];
 
     // Fetch full task detail
-    const detail = await fetchJson(`/api/tasks/${activeTask.id}`);
+    const detail = await _fetchJson(`/api/tasks/${activeTask.id}`);
     if (!detail) {
-      process.exit(0);
-      return;
+      return { exitCode: 0 };
     }
 
     // Fetch reports
-    const reportsData = await fetchJson(`/api/tasks/${activeTask.id}/reports`);
+    const reportsData = await _fetchJson(`/api/tasks/${activeTask.id}/reports`);
     const reports = reportsData ? (reportsData.reports || []) : [];
 
     // Build and write context
-    const content = buildContext(detail, reports, taskList, eventName);
-    if (!fs.existsSync(MEMORY_DIR)) {
-      fs.mkdirSync(MEMORY_DIR, { recursive: true });
+    const content = buildContext(detail, reports, taskList, eventName, nowIsoFn());
+    if (!_fs.existsSync(memoryDir)) {
+      _fs.mkdirSync(memoryDir, { recursive: true });
     }
-    fs.writeFileSync(CONTEXT_FILE, content, 'utf8');
-    logLine(`SUCCESS — wrote ${CONTEXT_FILE}`);
-    markWritten();
+    _fs.writeFileSync(contextFile, content, 'utf8');
+    logLine(`SUCCESS — wrote ${contextFile}`);
+    markWritten(_fs, throttleFile, nowMsFn());
   } catch (err) {
     logLine(`ERROR: ${err.message}`);
     // Never interfere with agent flow
   }
 
-  process.exit(0);
+  return { exitCode: 0 };
 }
+
+module.exports = { run };
 
 // ── Context Builder ──────────────────────────────────────────────────
 
-function buildContext(task, reports, allTasks, eventName) {
-  const now = new Date().toISOString();
+function buildContext(task, reports, allTasks, eventName, nowIso = new Date().toISOString()) {
+  const now = nowIso;
   const date = now.split('T')[0];
   const lines = [];
 
@@ -261,4 +255,30 @@ function fetchJson(urlPath) {
   });
 }
 
-main().catch(() => process.exit(0));
+// ── CLI shim (standalone invocation — preserves exact prior behavior) ─
+if (require.main === module) {
+  (async () => {
+    // Debug log to verify hook is firing (diagnostic only)
+    const debugLog = path.join(os.tmpdir(), 'mt-session-save-debug.log');
+    const logLine = (msg) => { try { fs.appendFileSync(debugLog, `${new Date().toISOString()} ${msg}\n`); } catch {} };
+
+    logLine('Hook invoked');
+
+    let input = '';
+    for await (const chunk of process.stdin) {
+      input += chunk;
+    }
+
+    let hookData;
+    try {
+      hookData = JSON.parse(input);
+    } catch (e) {
+      logLine(`JSON parse error: ${e.message}`);
+      process.exit(0);
+      return;
+    }
+
+    await run(hookData, { log: logLine });
+    process.exit(0);
+  })().catch(() => process.exit(0));
+}

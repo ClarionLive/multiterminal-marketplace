@@ -1,0 +1,5 @@
+[
+  { "name": "non-sessionend", "stdin": { "hook_event_name": "PostToolUse" } },
+  { "name": "malformed-json", "stdin": "not json" },
+  { "name": "sessionend-no-name", "stdin": { "hook_event_name": "SessionEnd", "transcript_path": "/x", "session_id": "s" }, "env": { "MULTITERMINAL_NAME": "" } }
+]

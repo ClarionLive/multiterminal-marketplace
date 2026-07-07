@@ -68,37 +68,42 @@ function getActiveTask(agentName) {
   }
 }
 
-async function main() {
-  // Read stdin
-  let input = '';
-  for await (const chunk of process.stdin) input += chunk;
-
-  let hookData;
-  try { hookData = JSON.parse(input); } catch (e) { return; }
+// ── Core (dispatcher-callable) ───────────────────────────────────────
+// Parsed hookData in (CLI shim reads stdin). Injectable deps (getActiveTask /
+// httpPost / fs / env / log) so the SessionEnd import path is unit-testable
+// without a live DB read or REST call (ticket 42c91001). Self-gates on
+// eventName==='SessionEnd' → matcher-blind-dispatch safe. Side-effect-only (no
+// stdout); diagnostics go to stderr via `log`. Returns {exitCode:0}.
+async function run(hookData, deps = {}) {
+  const _fs = deps.fs || fs;
+  const env = deps.env || process.env;
+  const _httpPost = deps.httpPost || httpPost;
+  const _getActiveTask = deps.getActiveTask || getActiveTask;
+  const log = deps.log || ((m) => process.stderr.write(m));
 
   const eventName = hookData.hook_event_name || hookData.hook_type || hookData.type;
-  if (eventName !== 'SessionEnd') return;
+  if (eventName !== 'SessionEnd') return { exitCode: 0 };
 
-  const agentName = process.env.MULTITERMINAL_NAME;
-  if (!agentName) return; // Not a MultiTerminal session
+  const agentName = env.MULTITERMINAL_NAME;
+  if (!agentName) return { exitCode: 0 }; // Not a MultiTerminal session
 
   const transcriptPath = hookData.transcript_path;
   const sessionId = hookData.session_id;
-  if (!transcriptPath || !sessionId) return;
+  if (!transcriptPath || !sessionId) return { exitCode: 0 };
 
   // Verify the transcript file exists
-  if (!fs.existsSync(transcriptPath)) {
-    process.stderr.write(`[session-import] Transcript not found: ${transcriptPath}\n`);
-    return;
+  if (!_fs.existsSync(transcriptPath)) {
+    log(`[session-import] Transcript not found: ${transcriptPath}\n`);
+    return { exitCode: 0 };
   }
 
   // Find the active task for this terminal
-  const activeTask = getActiveTask(agentName);
+  const activeTask = _getActiveTask(agentName);
   // If no active task, use a sentinel value so we still import the session
   const taskId = activeTask ? activeTask.id : '__unlinked__';
 
   // Import via REST API
-  const result = await httpPost('/api/session-lineage/import', {
+  const result = await _httpPost('/api/session-lineage/import', {
     sessionFilePath: transcriptPath,
     taskId: taskId,
     agentName: agentName,
@@ -107,12 +112,26 @@ async function main() {
   });
 
   if (result && result.success) {
-    process.stderr.write(`[session-import] Imported session ${sessionId} (${result.messageCount} msgs) → task ${taskId}\n`);
+    log(`[session-import] Imported session ${sessionId} (${result.messageCount} msgs) → task ${taskId}\n`);
   } else {
-    process.stderr.write(`[session-import] Failed to import session ${sessionId}: ${JSON.stringify(result)}\n`);
+    log(`[session-import] Failed to import session ${sessionId}: ${JSON.stringify(result)}\n`);
   }
+  return { exitCode: 0 };
 }
 
-main().catch(e => {
-  process.stderr.write(`[session-import] Error: ${e.message}\n`);
-});
+module.exports = { run };
+
+// ── CLI shim (standalone invocation — preserves exact prior behavior) ─
+if (require.main === module) {
+  (async () => {
+    let input = '';
+    for await (const chunk of process.stdin) input += chunk;
+
+    let hookData;
+    try { hookData = JSON.parse(input); } catch (e) { return; } // malformed → silent
+
+    await run(hookData, {});
+  })().catch(e => {
+    process.stderr.write(`[session-import] Error: ${e.message}\n`);
+  });
+}
