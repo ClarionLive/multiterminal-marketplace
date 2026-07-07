@@ -100,6 +100,10 @@ async function main() {
     }
 
     // Census: 37 dispatchable node leaves + 1 non-node (SessionStart powershell echo) = 38.
+    // POST-COLLAPSE SHAPE (PM-confirmed): the dispatcher owns node leaves only, so the
+    // collapsed hooks.json is 37/37 node leaves routed through dispatch-hook.js (2 entries
+    // per event: sync + async:true) PLUS the 1 powershell echo kept as its own standalone
+    // SessionStart entry = 38 total. The powershell leaf is never dispatched.
     ok(total === 38, `T6 hooks.json total leaf census == 38 (got ${total})`);
     ok(node === 37, `T6 dispatchable node leaves == 37 (got ${node})`);
     ok(nonNode.length === 1 && nonNode[0].command === 'powershell',

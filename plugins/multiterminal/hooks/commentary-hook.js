@@ -17,50 +17,72 @@ const COMMENTATOR_NAME = 'Commentator';
 let lastSentAt = 0;
 const MIN_INTERVAL_MS = 3000; // At most one event every 3 seconds
 
-let input = '';
-process.stdin.setEncoding('utf8');
-process.stdin.on('data', chunk => input += chunk);
-process.stdin.on('end', async () => {
+// ── Core (dispatcher-callable) ───────────────────────────────────────
+// ASYNC class (async:true → async dispatch head under B2). Sends interesting
+// events to the Commentator via MT messaging; deps (getTerminals / sendMessage)
+// are injectable so tests exercise the extract→send logic with stubs instead of
+// firing HTTP at the running MultiTerminal (ticket 42c91001). No stdout; always
+// returns {exitCode: 0} (fire-and-forget, never blocks).
+async function run(hookData, deps = {}) {
+  const _getTerminals = deps.getTerminals || getTerminals;
+  const _sendMessage = deps.sendMessage || sendMessage;
   try {
-    const hookData = JSON.parse(input);
     const agentName = process.env.MULTITERMINAL_NAME || 'Unknown';
 
     // Don't send events FROM the Commentator itself
     if (agentName === COMMENTATOR_NAME) {
-      process.exit(0);
+      return { exitCode: 0 };
     }
 
-    const event = extractEvent(hookData, agentName);
+    const event = extractEvent(hookData || {}, agentName);
     if (!event) {
-      process.exit(0);
+      return { exitCode: 0 };
     }
 
     // Rate limit
     const now = Date.now();
     if (now - lastSentAt < MIN_INTERVAL_MS) {
-      process.exit(0);
+      return { exitCode: 0 };
     }
     lastSentAt = now;
 
     // Get Commentator's terminal ID, then send
-    const terminals = await getTerminals();
+    const terminals = await _getTerminals();
     const commentator = terminals.find(t => t.name === COMMENTATOR_NAME);
     if (!commentator) {
       // Commentator not online — silently skip
-      process.exit(0);
+      return { exitCode: 0 };
     }
 
     // Find sender's terminal ID
     const sender = terminals.find(t => t.name === agentName);
     const fromId = sender ? sender.id : 'unknown';
 
-    await sendMessage(fromId, COMMENTATOR_NAME, JSON.stringify(event));
-    process.exit(0);
+    await _sendMessage(fromId, COMMENTATOR_NAME, JSON.stringify(event));
+    return { exitCode: 0 };
   } catch (err) {
     // Never block the agent
-    process.exit(0);
+    return { exitCode: 0 };
   }
-});
+}
+
+module.exports = { run };
+
+// ── CLI shim (standalone invocation — preserves exact prior behavior) ─
+if (require.main === module) {
+  let input = '';
+  process.stdin.setEncoding('utf8');
+  process.stdin.on('data', chunk => input += chunk);
+  process.stdin.on('end', async () => {
+    try {
+      const hookData = JSON.parse(input);
+      await run(hookData);
+    } catch (err) {
+      // Never block the agent
+    }
+    process.exit(0);
+  });
+}
 
 /**
  * Extract an interesting event from hook data, or null if not interesting

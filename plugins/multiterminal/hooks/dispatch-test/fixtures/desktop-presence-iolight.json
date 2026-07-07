@@ -1,0 +1,4 @@
+[
+  { "name": "channel-injected-json", "stdin": { "prompt": "<channel source=\"plugin:multiterminal:multiterminal-channel\" from=\"Alice\">status?</channel>" } },
+  { "name": "channel-injected-raw", "stdin": "<channel source=\"plugin:multiterminal:multiterminal-channel\">phone message</channel>" }
+]

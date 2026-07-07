@@ -83,16 +83,44 @@ function postRemoteModeOff() {
   });
 }
 
-(async () => {
+// ── Core (dispatcher-callable) ───────────────────────────────────────
+// ASYNC class (async:true → async dispatch head under B2). Flips MT remote-mode
+// off on a real desktop prompt; skips for channel-injected (phone) prompts. In
+// the dispatcher, hookData is already parsed, so the channel marker is checked on
+// hookData.prompt; postRemoteModeOff is injectable so tests don't hit :5050
+// (ticket 42c91001). No stdout; always returns {exitCode: 0}.
+async function run(hookData, deps = {}) {
+  const _post = deps.postRemoteModeOff || postRemoteModeOff;
   try {
-    const stdinData = await readStdin();
-    if (isChannelInjectedPrompt(stdinData)) {
+    const prompt = (hookData && hookData.prompt) || '';
+    if (/<channel\s+source="plugin:multiterminal/.test(prompt)) {
       // Phone-originated message routed through desktop Claude — user is at phone, not desk.
-      process.exit(0);
+      return { exitCode: 0 };
     }
-    await postRemoteModeOff();
+    await _post();
   } catch {
     // swallow — hook must never block Claude
   }
-  process.exit(0);
-})();
+  return { exitCode: 0 };
+}
+
+module.exports = { run };
+
+// ── CLI shim (standalone invocation — preserves exact prior behavior) ─
+// Kept raw-stdin-based (isChannelInjectedPrompt handles the JSON-or-raw fallback)
+// so standalone behavior is byte-identical to the pre-refactor hook.
+if (require.main === module) {
+  (async () => {
+    try {
+      const stdinData = await readStdin();
+      if (isChannelInjectedPrompt(stdinData)) {
+        // Phone-originated message routed through desktop Claude — user is at phone, not desk.
+        process.exit(0);
+      }
+      await postRemoteModeOff();
+    } catch {
+      // swallow — hook must never block Claude
+    }
+    process.exit(0);
+  })();
+}

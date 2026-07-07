@@ -1,0 +1,5 @@
+[
+  { "name": "commentator-self-skip", "stdin": { "hook_event_name": "PostToolUse", "tool_name": "Edit", "tool_input": { "file_path": "/x.cs" } }, "env": { "MULTITERMINAL_NAME": "Commentator" } },
+  { "name": "read-no-event", "stdin": { "hook_event_name": "PostToolUse", "tool_name": "Read", "tool_input": {} }, "env": { "MULTITERMINAL_NAME": "HarnessAgent-42c91001" } },
+  { "name": "malformed-json", "stdin": "not json", "env": { "MULTITERMINAL_NAME": "Commentator" } }
+]

@@ -63,30 +63,23 @@ function callApi(apiPath, method, body) {
   });
 }
 
-async function main() {
-  let input = '';
-  for await (const chunk of process.stdin) {
-    input += chunk;
-  }
-
+// ── Core (dispatcher-callable) ───────────────────────────────────────
+// ASYNC class (async:true → async dispatch head under B2). POSTs Notification
+// events to MT for storage/toast/phone-push; callApi is injectable so tests don't
+// hit :5050 (ticket 42c91001). No stdout; always returns {exitCode: 0}.
+async function run(hookData, deps = {}) {
+  const _callApi = deps.callApi || callApi;
   const timestamp = new Date().toISOString();
+  const data = hookData || {};
 
-  let hookData;
-  try {
-    hookData = JSON.parse(input);
-  } catch (err) {
-    debugLog(`${timestamp} PARSE ERROR: ${err.message}\n`);
-    return;
-  }
-
-  const hookType = hookData.hook_event_name;
+  const hookType = data.hook_event_name;
   if (hookType !== 'Notification') {
     debugLog(`${timestamp} SKIPPED: not a Notification event (got ${hookType})\n`);
-    return;
+    return { exitCode: 0 };
   }
 
-  const agentName = process.env.MULTITERMINAL_NAME || hookData.agent_type || 'Unknown';
-  const rawType = hookData.notification_type || 'unknown';
+  const agentName = process.env.MULTITERMINAL_NAME || data.agent_type || 'Unknown';
+  const rawType = data.notification_type || 'unknown';
 
   // Map Claude Code native notification types to ClaudeRemote-compatible types
   const typeMap = {
@@ -102,9 +95,9 @@ async function main() {
     'elicitation_dialog': `${agentName} has a question that needs your response`,
     'permission_prompt': `${agentName} needs permission to continue`,
   };
-  const title = hookData.title || notificationType;
-  const message = messageMap[rawType] || hookData.message || '';
-  const cwd = hookData.cwd || process.env.CLAUDE_PROJECT_DIR || '';
+  const title = data.title || notificationType;
+  const message = messageMap[rawType] || data.message || '';
+  const cwd = data.cwd || process.env.CLAUDE_PROJECT_DIR || '';
 
   // Try to read project name from .claude/project.json in the working directory
   let projectName = '';
@@ -122,16 +115,35 @@ async function main() {
     notification_type: notificationType,
     title: title,
     message: message,
-    session_id: hookData.session_id || '',
+    session_id: data.session_id || '',
     agent_name: agentName,
     project_name: projectName,
     cwd: cwd
   };
 
-  const result = await callApi('/api/notifications', 'POST', payload);
+  const result = await _callApi('/api/notifications', 'POST', payload);
   debugLog(`${timestamp} API RESULT: ok=${result.ok}\n`);
+  return { exitCode: 0 };
 }
 
-main().catch(err => {
-  debugLog(`${new Date().toISOString()} FATAL: ${err.message}\n`);
-});
+module.exports = { run };
+
+// ── CLI shim (standalone invocation — preserves exact prior behavior) ─
+if (require.main === module) {
+  (async () => {
+    let input = '';
+    for await (const chunk of process.stdin) {
+      input += chunk;
+    }
+    let hookData;
+    try {
+      hookData = JSON.parse(input);
+    } catch (err) {
+      debugLog(`${new Date().toISOString()} PARSE ERROR: ${err.message}\n`);
+      return;
+    }
+    await run(hookData);
+  })().catch(err => {
+    debugLog(`${new Date().toISOString()} FATAL: ${err.message}\n`);
+  });
+}

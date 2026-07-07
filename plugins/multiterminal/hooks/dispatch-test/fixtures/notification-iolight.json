@@ -1,0 +1,4 @@
+[
+  { "name": "non-notification-event", "stdin": { "hook_event_name": "PostToolUse", "tool_name": "Edit" } },
+  { "name": "malformed-json", "stdin": "not json" }
+]

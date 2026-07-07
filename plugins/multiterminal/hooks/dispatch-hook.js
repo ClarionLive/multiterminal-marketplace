@@ -35,13 +35,14 @@ const TABLE = {
   ],
   PostToolUse: [
     { name: 'activity-hook', mod: './activity-hook.js', head: 'async' },
+    { name: 'commentary-hook', mod: './commentary-hook.js', head: 'async' },
     { name: 'inbox-check-hook', mod: './inbox-check-hook.js', head: 'sync' },
-    // fan-out: commentary (async), active-context (sync), pipeline-trigger (sync),
+    // fan-out: active-context (sync), pipeline-trigger (sync),
     //          research-cache (sync), context-threshold (sync)
   ],
   PostToolUseFailure: [
     { name: 'activity-hook', mod: './activity-hook.js', head: 'async' },
-    // fan-out: commentary (async)
+    { name: 'commentary-hook', mod: './commentary-hook.js', head: 'async' },
   ],
   Stop: [
     { name: 'inbox-check-hook', mod: './inbox-check-hook.js', head: 'sync' },
@@ -52,8 +53,15 @@ const TABLE = {
     { name: 'inbox-check-hook', mod: './inbox-check-hook.js', head: 'sync' },
     // fan-out: subagent-office (sync)
   ],
+  UserPromptSubmit: [
+    { name: 'desktop-presence-hook', mod: './desktop-presence-hook.js', head: 'async' },
+    // fan-out: inbox-check (sync), context-threshold (sync)
+  ],
+  Notification: [
+    { name: 'notification-hook', mod: './notification-hook.js', head: 'async' },
+  ],
   // Remaining events (SessionStart/SessionEnd/PreCompact/Elicitation/SubagentStart/
-  // TeammateIdle/UserPromptSubmit/Notification) wired during fan-out.
+  // TeammateIdle) wired during fan-out.
 };
 
 function resolveRun(leaf) {
