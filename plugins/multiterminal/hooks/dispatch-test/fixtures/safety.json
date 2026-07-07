@@ -1,0 +1,19 @@
+[
+  { "name": "bash-deny-gitadd-all", "stdin": { "tool_name": "Bash", "tool_input": { "command": "git add ." } } },
+  { "name": "bash-deny-rmrf-root", "stdin": { "tool_name": "Bash", "tool_input": { "command": "sudo rm -rf /" } } },
+  { "name": "bash-ask-forcepush", "stdin": { "tool_name": "Bash", "tool_input": { "command": "git push --force origin main" } } },
+  { "name": "bash-ask-kill", "stdin": { "tool_name": "Bash", "tool_input": { "command": "taskkill /F /IM node.exe" } } },
+  { "name": "bash-allow-ls", "stdin": { "tool_name": "Bash", "tool_input": { "command": "ls -la src/" } } },
+  { "name": "read-deny-env", "stdin": { "tool_name": "Read", "tool_input": { "file_path": "/app/.env" } } },
+  { "name": "read-deny-pem", "stdin": { "tool_name": "Read", "tool_input": { "file_path": "/home/u/id_rsa" } } },
+  { "name": "read-allow-src", "stdin": { "tool_name": "Read", "tool_input": { "file_path": "/app/src/index.js" } } },
+  { "name": "write-deny-env", "stdin": { "tool_name": "Write", "tool_input": { "file_path": "/app/.env.local" } } },
+  { "name": "write-allow-src", "stdin": { "tool_name": "Edit", "tool_input": { "file_path": "/app/src/foo.ts" } } },
+  { "name": "sql-deny-drop", "stdin": { "tool_name": "mcp__sqlite__write_query", "tool_input": { "query": "DROP TABLE users" } } },
+  { "name": "sql-ask-update-nowhere", "stdin": { "tool_name": "mcp__mssql__query", "tool_input": { "query": "UPDATE accounts SET active = 1" } } },
+  { "name": "sql-allow-select", "stdin": { "tool_name": "mcp__sqlite__write_query", "tool_input": { "query": "INSERT INTO log (msg) VALUES ('ok')" } } },
+  { "name": "unknown-tool", "stdin": { "tool_name": "WebFetch", "tool_input": { "url": "https://example.com" } } },
+  { "name": "no-tool-input", "stdin": { "tool_name": "Bash" } },
+  { "name": "empty-object", "stdin": {} },
+  { "name": "malformed-json", "stdin": "this is not json" }
+]

@@ -323,25 +323,15 @@ function checkSql(query) {
   return null;
 }
 
-// ── Main ────────────────────────────────────────────────────────────
-
-async function main() {
-  let input = '';
-  for await (const chunk of process.stdin) {
-    input += chunk;
-  }
-
-  let hookData;
-  try {
-    hookData = JSON.parse(input);
-  } catch {
-    // Can't parse — allow the tool to proceed
-    process.exit(0);
-    return;
-  }
-
-  const toolName = hookData.tool_name;
-  const toolInput = hookData.tool_input || {};
+// ── Core (dispatcher-callable) ───────────────────────────────────────
+// Pure decision logic: no stdin read, no process.exit. Returns the same
+// {exitCode, stdout} the standalone hook produced, so the dispatch-hook can
+// run it in-process (ticket 42c91001). safety-hook always exits 0; any
+// deny/ask decision travels as the stdout JSON.
+function run(hookData) {
+  const data = hookData || {};
+  const toolName = data.tool_name;
+  const toolInput = data.tool_input || {};
 
   let result = null;
 
@@ -366,14 +356,36 @@ async function main() {
       break;
   }
 
-  if (result) {
-    console.log(JSON.stringify(result));
-  }
-
-  // Exit 0 always — decision is in the JSON output
-  process.exit(0);
+  return { exitCode: 0, stdout: result ? JSON.stringify(result) : '' };
 }
 
-main().catch(() => {
-  process.exit(0);
-});
+module.exports = { run };
+
+// ── CLI shim (standalone invocation — preserves exact prior behavior) ─
+if (require.main === module) {
+  (async () => {
+    let input = '';
+    for await (const chunk of process.stdin) {
+      input += chunk;
+    }
+
+    let hookData;
+    try {
+      hookData = JSON.parse(input);
+    } catch {
+      // Can't parse — allow the tool to proceed
+      process.exit(0);
+      return;
+    }
+
+    const { exitCode, stdout } = run(hookData);
+    if (stdout) {
+      console.log(stdout);
+    }
+
+    // Exit 0 always — decision is in the JSON output
+    process.exit(exitCode || 0);
+  })().catch(() => {
+    process.exit(0);
+  });
+}
