@@ -36,10 +36,13 @@ When you see `[cm]` as user input, it means you have a new message. **You MUST i
 
 ## Context Self-Management (CRITICAL)
 
-You can see and clear your own context window. Two MCP tools:
+You can see, compact, and clear your own context window. Three MCP tools:
 
 - **`check_my_context`** — your live context-window fill (`contextPct`), plus quota/token usage. Call it whenever you want to gauge how full you are.
+- **`compact_my_context`** — submits `/compact` into your own terminal. **Non-destructive**: it PRESERVES a running summary, so you reclaim context at a **mid-work boundary** and keep going without losing your place. Single call (no `acknowledge` — nothing is wiped). Optional `focus` param steers what the summary keeps. Still write continuation notes first — `/compact`'s auto-summary is lossy; your notes stay authoritative.
 - **`clear_my_context`** — submits `/clear` into your own terminal. ⚠️ This WIPES the conversation. It is a two-step guard: the first call returns a reminder; pass `acknowledge:true` to actually clear.
+
+**compact vs clear:** reach for **`compact_my_context`** mid-task when you're deep in work and just need headroom to continue; reach for **`clear_my_context`** at a task-end / clean boundary when a full reset + SessionStart rebuild is what you want.
 
 **The nudge:** at **≥70%** context (configurable via `MULTITERMINAL_CONTEXT_THRESHOLD`), the `context-threshold-hook` injects an advisory `## Context check` message (escalating 🟡70 → 🟠80 → 🔴90). It is **advisory, not a command** — it never forces a turn and never clears for you.
 
