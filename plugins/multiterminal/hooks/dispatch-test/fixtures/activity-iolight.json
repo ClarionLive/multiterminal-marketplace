@@ -1,0 +1,8 @@
+[
+  { "name": "pretooluse-edit", "stdin": { "hook_event_name": "PreToolUse", "tool_name": "Edit", "tool_input": { "file_path": "/a/b.js" } }, "env": { "APPDATA": "C:\\mt-harness-nonexistent-42c91001" } },
+  { "name": "pretooluse-read-skip", "stdin": { "hook_event_name": "PreToolUse", "tool_name": "Read", "tool_input": { "file_path": "/a/b.js" } }, "env": { "APPDATA": "C:\\mt-harness-nonexistent-42c91001" } },
+  { "name": "posttooluse-bash-nonbuild", "stdin": { "hook_event_name": "PostToolUse", "tool_name": "Bash", "tool_input": { "command": "ls -la" } }, "env": { "APPDATA": "C:\\mt-harness-nonexistent-42c91001" } },
+  { "name": "posttooluse-failure", "stdin": { "hook_event_name": "PostToolUseFailure", "tool_name": "Edit", "error": "some error" }, "env": { "APPDATA": "C:\\mt-harness-nonexistent-42c91001" } },
+  { "name": "empty-input", "stdin": "", "env": { "APPDATA": "C:\\mt-harness-nonexistent-42c91001" } },
+  { "name": "malformed-json", "stdin": "not json", "env": { "APPDATA": "C:\\mt-harness-nonexistent-42c91001" } }
+]

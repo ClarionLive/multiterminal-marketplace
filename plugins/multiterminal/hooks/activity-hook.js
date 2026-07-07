@@ -221,38 +221,34 @@ async function disconnectSubagent(hookData) {
 /**
  * Process stdin and handle the hook event
  */
-async function main() {
-  let input = '';
-  for await (const chunk of process.stdin) {
-    input += chunk;
-  }
+// ── Core (dispatcher-callable) ───────────────────────────────────────
+// ASYNC class (async:true in hooks.json → ASYNC dispatch head under B2). Records
+// activity to DB + bridges subagents via HTTP — all side-effects, no stdout, no
+// blocking. Deps (recordActivity / registerSubagent / disconnectSubagent) are
+// injectable so tests exercise the event→side-effect dispatch with spies instead
+// of firing real DB writes / HTTP at the running MultiTerminal (ticket 42c91001).
+// Always returns {exitCode: 0}; the dispatcher ignores async-leaf output.
+async function run(hookData, deps = {}) {
+  const _recordActivity = deps.recordActivity || recordActivity;
+  const _registerSubagent = deps.registerSubagent || registerSubagent;
+  const _disconnectSubagent = deps.disconnectSubagent || disconnectSubagent;
 
-  if (!input.trim()) {
-    return;
-  }
-
-  let hookData;
-  try {
-    hookData = JSON.parse(input);
-  } catch (err) {
-    return;
-  }
-
+  const data = hookData || {};
   const terminalName = process.env.MULTITERMINAL_NAME || 'Unknown';
-  const hookType = hookData.hook_event_name || hookData.hook_type || hookData.type;
-  const tool = hookData.tool_name || hookData.tool || '';
+  const hookType = data.hook_event_name || data.hook_type || data.type;
+  const tool = data.tool_name || data.tool || '';
   // Normalize input: Claude Code uses tool_input, not input
-  if (hookData.tool_input && !hookData.input) {
-    hookData.input = hookData.tool_input;
+  if (data.tool_input && !data.input) {
+    data.input = data.tool_input;
   }
 
   // Debug: dump hook data to file for inspection
   const debugPath = path.join(process.env.APPDATA || '', 'multiterminal', 'hook-debug.log');
   try {
-    const debugLine = `[${new Date().toISOString()}] ${hookType} tool=${tool} keys=${Object.keys(hookData).join(',')}\n`;
+    const debugLine = `[${new Date().toISOString()}] ${hookType} tool=${tool} keys=${Object.keys(data).join(',')}\n`;
     fs.appendFileSync(debugPath, debugLine);
     if (hookType === 'SubagentStart' || hookType === 'SubagentStop' || tool === 'Task') {
-      fs.appendFileSync(debugPath, `  FULL DATA: ${JSON.stringify(hookData, null, 2)}\n`);
+      fs.appendFileSync(debugPath, `  FULL DATA: ${JSON.stringify(data, null, 2)}\n`);
     }
   } catch(e) { /* ignore debug failures */ }
 
@@ -264,25 +260,25 @@ async function main() {
 
       // Register subagent when Task tool is about to be called
       if (tool === 'Task') {
-        const rawName = hookData.input?.name || hookData.input?.description || 'Worker';
-        await registerSubagent({
+        const rawName = data.input?.name || data.input?.description || 'Worker';
+        await _registerSubagent({
           name: rawName,
-          subagent_type: hookData.input?.subagent_type || 'general-purpose',
+          subagent_type: data.input?.subagent_type || 'general-purpose',
           agent_id: rawName
         });
       }
 
-      const summary = getToolSummary(tool, hookData.input);
-      recordActivity('TOOL_START', terminalName, `${tool}: ${summary}`, 'info',
-        JSON.stringify({ tool, input: hookData.input }));
+      const summary = getToolSummary(tool, data.input);
+      _recordActivity('TOOL_START', terminalName, `${tool}: ${summary}`, 'info',
+        JSON.stringify({ tool, input: data.input }));
       break;
     }
 
     case 'PostToolUse': {
       // Disconnect subagent when Task tool completes
       if (tool === 'Task') {
-        const rawName = hookData.input?.name || hookData.input?.description || 'Worker';
-        await disconnectSubagent({
+        const rawName = data.input?.name || data.input?.description || 'Worker';
+        await _disconnectSubagent({
           name: rawName,
           agent_id: rawName
         });
@@ -290,13 +286,13 @@ async function main() {
 
       // Special handling for build commands
       if (tool === 'Bash') {
-        const command = hookData.input?.command || '';
+        const command = data.input?.command || '';
         const buildType = detectBuildCommand(command);
 
         if (buildType) {
-          const exitCode = hookData.output?.exit_code ?? hookData.exit_code ?? 0;
+          const exitCode = data.output?.exit_code ?? data.exit_code ?? 0;
           const success = exitCode === 0;
-          const projectName = extractProjectName(command, hookData.cwd);
+          const projectName = extractProjectName(command, data.cwd);
 
           const activityType = success ? 'BUILD_SUCCEEDED' : 'BUILD_FAILED';
           const summary = success
@@ -304,7 +300,7 @@ async function main() {
             : `Build failed: ${projectName}`;
           const severity = success ? 'info' : 'error';
 
-          recordActivity(activityType, terminalName, summary, severity,
+          _recordActivity(activityType, terminalName, summary, severity,
             JSON.stringify({ buildType, projectName, exitCode }));
           break;
         }
@@ -313,40 +309,65 @@ async function main() {
       // Skip noisy read-only tools
       if (SKIP_TOOLS.has(tool)) break;
 
-      const summary = getToolSummary(tool, hookData.input);
-      recordActivity('TOOL_COMPLETE', terminalName, `${tool}: ${summary}`, 'info',
+      const summary = getToolSummary(tool, data.input);
+      _recordActivity('TOOL_COMPLETE', terminalName, `${tool}: ${summary}`, 'info',
         JSON.stringify({ tool }));
       break;
     }
 
     case 'PostToolUseFailure': {
-      const error = hookData.error || hookData.output?.error || 'Unknown error';
+      const error = data.error || data.output?.error || 'Unknown error';
       const summary = `${tool} failed: ${error.substring(0, 100)}`;
-      recordActivity('TOOL_FAILED', terminalName, summary, 'error',
+      _recordActivity('TOOL_FAILED', terminalName, summary, 'error',
         JSON.stringify({ tool, error }));
       break;
     }
 
     case 'SubagentStart': {
-      const agentType = hookData.subagent_type || hookData.agent_type || 'unknown';
-      const description = hookData.description || hookData.prompt?.substring(0, 50) || '';
-      recordActivity('SUBAGENT_START', terminalName, `Started ${agentType}: ${description}`, 'info',
+      const agentType = data.subagent_type || data.agent_type || 'unknown';
+      const description = data.description || data.prompt?.substring(0, 50) || '';
+      _recordActivity('SUBAGENT_START', terminalName, `Started ${agentType}: ${description}`, 'info',
         JSON.stringify({ agentType, description }));
       // Note: Office registration handled by PreToolUse for Task tool (has full name data)
       break;
     }
 
     case 'SubagentStop': {
-      const agentType = hookData.subagent_type || hookData.agent_type || 'unknown';
-      const success = hookData.success !== false;
+      const agentType = data.subagent_type || data.agent_type || 'unknown';
+      const success = data.success !== false;
       const activityType = success ? 'SUBAGENT_COMPLETE' : 'SUBAGENT_FAILED';
       const severity = success ? 'info' : 'warning';
-      recordActivity(activityType, terminalName, `${agentType} ${success ? 'completed' : 'failed'}`, severity,
+      _recordActivity(activityType, terminalName, `${agentType} ${success ? 'completed' : 'failed'}`, severity,
         JSON.stringify({ agentType, success }));
       // Note: Office disconnect handled by PostToolUse for Task tool (has full name data)
       break;
     }
   }
+
+  return { exitCode: 0 };
 }
 
-main().catch(() => {});
+module.exports = { run };
+
+// ── CLI shim (standalone invocation — preserves exact prior behavior) ─
+if (require.main === module) {
+  (async () => {
+    let input = '';
+    for await (const chunk of process.stdin) {
+      input += chunk;
+    }
+
+    if (!input.trim()) {
+      return;
+    }
+
+    let hookData;
+    try {
+      hookData = JSON.parse(input);
+    } catch (err) {
+      return;
+    }
+
+    await run(hookData);
+  })().catch(() => {});
+}
