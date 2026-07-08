@@ -43,7 +43,7 @@ Before anything else, you MUST identify yourself:
 
 **How to use the results:**
 - `get_latest_session` returns a summary. **Use this summary as your primary context** for the greeting. It's generated from the actual session messages and describes what was worked on.
-- If the summary is empty or says "No summary cached", fall back to `search_session_memory(query="what we worked on last session", projectPath=PROJECT_ROOT, topK=5, agentName=YOUR_NAME)` to get transcript chunks. Synthesize a 2-3 sentence summary from those chunks.
+- If the summary is empty or says "No summary cached", fall back to `search_session_memory(query="session progress, what we worked on, bugs fixed, features implemented, decisions made", projectPath=PROJECT_ROOT, topK=10, agentName=YOUR_NAME)` to get transcript chunks. The `agentName` filter keeps YOUR sessions and drops subagent noise; the richer query + topK=10 surface real work over boilerplate. Synthesize a 2-3 sentence summary from those chunks.
 - The active task is secondary context. `memory/ACTIVE-CONTEXT.md` is a stale on-demand artifact, not session state — the recap owner is `get_latest_session` (above), so don't rely on ACTIVE-CONTEXT for what happened last session.
 - **IMPORTANT:** Do NOT just repeat the active task's continuation notes as your summary. If the session summary tells a different story than the active task, trust the session summary — the user may have been working off-task.
 
