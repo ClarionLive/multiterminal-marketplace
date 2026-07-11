@@ -91,10 +91,11 @@ When you see this event, react before doing any other work:
      Then wait for direction.
    - **Empty output (clean):** proceed.
 5. **Honor `[no-cd]`.** If the most recent user turn contains the literal `[no-cd]`, skip the switch silently. Useful when the user is deliberately working across worktrees and doesn't want you to follow.
-6. **Switch into the worktree:**
+6. **Verify the worktree belongs to THIS project.** Derive the target's repo root — the portion of `newWorktree` before `\.claude\worktrees\` — and confirm it is the repo/project you're working in (equal to, or a parent of, your current terminal's launch/project directory). If it is **not**, do NOT enter: print one line — "Active task's worktree belongs to a different project (`<repoRoot>`); staying put." — and stop the switch. This backstops a cross-project active task that slipped through.
+7. **Switch into the worktree:**
    - **Preferred (Claude Code CLI ≥ 2.1.157):** `EnterWorktree(path='<newWorktree>')`. MT worktrees live under `<repoRoot>/.claude/worktrees/<id>`, which the enter-existing form requires for cwd-pinned terminals. This moves the **process** cwd cleanly and survives the harness cwd-reset guard, unlike a raw `cd`. If you were already in another worktree via `EnterWorktree`, this switches directly.
    - **Fallback (CLI < 2.1.157, or `EnterWorktree` rejects the path):** `cd '<newWorktree>'` as a Bash call. PowerShell single-quote escaping: double any `'` to `''`. ⚠️ raw `cd` pins cwd and can strand the shell on the next prune — recommend upgrading the CLI.
-7. **Confirm** with one short line:
+8. **Confirm** with one short line:
    > "Entered `<newTaskId>` worktree." (or "cd'd to `<newTaskId>` worktree (raw cd fallback)" on the fallback path)
 
 ### Cross-worktree switching works

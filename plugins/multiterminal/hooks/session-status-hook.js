@@ -117,6 +117,89 @@ function updateSessionAgentMap(sessionId, terminalName, isActive) {
   }
 }
 
+// Resolve the project scope for this hook the same way the MCP server does
+// (mcp/index.js resolveProjectScope): an explicit MULTITERMINAL_PROJECT_ID wins; otherwise match
+// the launch directory (CLAUDE_PROJECT_DIR, else the process cwd) against the registered projects
+// table. This closes a fail-OPEN gap: a claude session started outside the MultiTerminal app has
+// no MULTITERMINAL_PROJECT_ID, so scope used to be null and the board injected UNSCOPED, leaking
+// another project's active task. A terminal sitting inside a task worktree
+// (<repo>\.claude\worktrees\<id>) belongs to the repo-root project, so strip that suffix before
+// matching. Both the candidate and each project path are realpath-canonicalized first (resolving
+// junctions / symlinks / DOS 8.3 short names) so a registered project reached via a non-canonical
+// path variant still matches; matching then compares only LIKE tiers (both realpath-resolved, or
+// both lexical-fallback) so a stale/permission-failed lexical path can't win against a canonical
+// candidate. Match on path equality OR the candidate being a descendant of a project's path
+// (path + separator prefix); when several projects match (e.g. a parent folder is itself
+// registered), the LONGEST — most specific — path wins.
+//
+// Returns { id: string|null, degraded: boolean }:
+//   - id set,  degraded false -> resolved project (env or matched folder).
+//   - id null, degraded false -> NO project indicated (unregistered folder). Legacy unscoped
+//                                behavior is correct — an unregistered folder means "no project".
+//   - id null, degraded true  -> the projects lookup FAILED (missing table / schema skew / any read
+//                                error). Must fail CLOSED: a lookup error is NOT the same as an
+//                                unregistered folder (the tasks table can be readable while projects
+//                                isn't), so callers must suppress task/knowledge injection rather
+//                                than fall back to the cross-project board. `db` is an already-open
+//                                better-sqlite3 handle, used for reads only.
+function resolveHookProjectId(db) {
+  const explicitId = process.env.MULTITERMINAL_PROJECT_ID;
+  if (explicitId) return { id: explicitId, degraded: false };
+
+  // Lexical normalization for Windows path compare: unify separators to '\', drop a trailing
+  // separator, lowercase.
+  const normalize = (p) => (p || '').replace(/[\\/]+/g, '\\').replace(/\\+$/, '').toLowerCase();
+  // Canonicalize a REAL path (resolves junctions / symlinks / 8.3 short names) then normalize; fall
+  // back to lexical-only when the path can't be resolved (missing dir / permission). Doing this on
+  // BOTH sides is what stops a registered project reached via a non-canonical path variant (a
+  // junction, a symlink, a DOS 8.3 name) from falling to no-match -> unscoped. Returns
+  // { path, real }: real=true ONLY when realpathSync.native succeeded — the tier the match loop
+  // uses to compare like-with-like (see the match-tier guard below).
+  const canonical = (p) => {
+    if (!p) return { path: '', real: false };
+    try { return { path: normalize(fs.realpathSync.native(p)), real: true }; }
+    catch (e) { return { path: normalize(p), real: false }; }
+  };
+
+  const candidateRaw = process.env.CLAUDE_PROJECT_DIR || process.cwd();
+  // Canonicalize the candidate FIRST, then strip a task-worktree suffix back to the repo root
+  // (a worktree's realpath is still under the repo root).
+  const cand = canonical(candidateRaw);
+  const candidate = cand.path.replace(/\\\.claude\\worktrees\\.*$/, '');
+  const candidateReal = cand.real;
+  if (!candidate) return { id: null, degraded: false };
+
+  let projects;
+  try {
+    projects = db.prepare(
+      `SELECT id, path FROM projects WHERE path IS NOT NULL AND path != ''`
+    ).all();
+  } catch (e) {
+    // projects table missing/unreadable — fail CLOSED. Returning a null id as "unscoped" here would
+    // re-open the leak, since the tasks table may still be readable and inject the global board.
+    return { id: null, degraded: true };
+  }
+
+  let bestId = null;
+  let bestLen = -1;
+  for (const p of projects) {
+    const row = canonical(p.path);
+    const pp = row.path;
+    if (!pp) continue;
+    // MATCH-TIER GUARD: only compare like tiers. A row whose realpath FAILED (lexical — a stale /
+    // deleted path or a permission blip) must NOT match a candidate whose realpath SUCCEEDED
+    // (canonical), and vice versa: a stale lexical prefix of a canonical candidate would otherwise
+    // win the WRONG project. Both-canonical compares canonical forms; both-lexical compares the
+    // (tier-appropriate) lexical forms — cand.path/pp already carry each side's own tier.
+    if (row.real !== candidateReal) continue;
+    // equality, or candidate is a descendant of the project root (path + separator prefix)
+    if (candidate === pp || candidate.startsWith(pp + '\\')) {
+      if (pp.length > bestLen) { bestLen = pp.length; bestId = String(p.id); }
+    }
+  }
+  return { id: bestId, degraded: false };
+}
+
 function getKanbanContext(db, terminalName, projectId) {
   const tableCheck = db.prepare(`
     SELECT name FROM sqlite_master
@@ -205,15 +288,24 @@ function getActiveTaskContext(db, terminalName, projectId) {
     LIMIT 1
   `).get(...params);
 
-  // Fall back to any project if no tasks in current project
+  // No in-project active task. When scoped to a project, do NOT fall back to the
+  // agent's active task in ANOTHER project: injecting a foreign task's worktree/notes
+  // lets the session-start protocol try to EnterWorktree into an unrelated repo. If such
+  // an out-of-project active task exists, emit a single informational line only — no
+  // checklist, continuation notes, file links, or worktree info the protocol could act on.
   if (!activeTask && projectId) {
-    activeTask = db.prepare(`
-      SELECT id, title, description, status, sub_status, checklist_json, plan, continuation_notes
+    const otherTask = db.prepare(`
+      SELECT id, title
       FROM tasks
       WHERE assignee = ? AND status = 'in_progress'
       ORDER BY CASE sub_status WHEN 'active' THEN 0 ELSE 1 END
       LIMIT 1
     `).get(terminalName);
+    if (otherTask) {
+      const shortId = String(otherTask.id).substring(0, 8);
+      return `(Note: your active task ${shortId} "${otherTask.title}" belongs to a different project and is not shown here.)`;
+    }
+    return null;
   }
 
   if (!activeTask) return null;
@@ -523,7 +615,16 @@ async function main() {
       // Inject per-project knowledge from DB with attention decay ranking
       try {
         const Database = requireBetterSqlite3();
-        const projectId = process.env.MULTITERMINAL_PROJECT_ID || null;
+        // Resolve scope from env-or-launch-dir (see resolveHookProjectId). A short-lived read-only
+        // handle is used here because the writable kdb below is only opened once we know we have a
+        // project to inject knowledge for. A degraded resolution yields a null id, so the
+        // non-null-projectId gate below already skips knowledge injection (fail closed) — same as a
+        // genuinely unregistered folder.
+        let projectId = null;
+        if (Database && fs.existsSync(DB_PATH)) {
+          const pdb = new Database(DB_PATH, { readonly: true });
+          try { projectId = resolveHookProjectId(pdb).id; } finally { pdb.close(); }
+        }
         if (Database && fs.existsSync(DB_PATH) && projectId) {
           const kdb = new Database(DB_PATH, { readonly: false }); // writable: must bump reference counts
           kdb.pragma('busy_timeout = 2000');
@@ -599,11 +700,21 @@ async function main() {
         if (Database && fs.existsSync(DB_PATH)) {
           const db = new Database(DB_PATH, { readonly: true });
           const lines = [];
-          const projectId = process.env.MULTITERMINAL_PROJECT_ID || null;
+          const scope = resolveHookProjectId(db);
+          const projectId = scope.id;
 
-          const kanbanContext = getKanbanContext(db, terminalName, projectId);
-          if (kanbanContext) {
-            lines.push(kanbanContext);
+          // Fail CLOSED on a degraded resolution: the projects lookup failed (missing table / schema
+          // skew), so we cannot trust scope. The tasks table may still be readable, so running the
+          // project-scoped board queries would silently inject the CROSS-PROJECT board again. Skip
+          // getKanbanContext/getActiveTaskContext and emit one non-actionable line instead. (Plans
+          // are project-agnostic — no worktree, nothing to act on — so plan context still runs.)
+          if (scope.degraded) {
+            lines.push('(Task context omitted: project scope could not be resolved — projects lookup failed.)');
+          } else {
+            const kanbanContext = getKanbanContext(db, terminalName, projectId);
+            if (kanbanContext) {
+              lines.push(kanbanContext);
+            }
           }
 
           const planContext = getPlanContext(db, terminalName);
@@ -612,10 +723,12 @@ async function main() {
             lines.push(planContext);
           }
 
-          const activeTaskContext = getActiveTaskContext(db, terminalName, projectId);
-          if (activeTaskContext) {
-            if (lines.length > 0) lines.push('');
-            lines.push(activeTaskContext);
+          if (!scope.degraded) {
+            const activeTaskContext = getActiveTaskContext(db, terminalName, projectId);
+            if (activeTaskContext) {
+              if (lines.length > 0) lines.push('');
+              lines.push(activeTaskContext);
+            }
           }
 
           db.close();
@@ -686,6 +799,13 @@ async function main() {
   }
 }
 
-main().catch((err) => {
-  console.error('Unhandled error:', err.message);
-});
+// Run as a hook only when invoked directly (node session-status-hook.js). Guarding on
+// require.main lets tests `require()` this file to exercise pure helpers like
+// resolveHookProjectId without main() blocking on stdin.
+if (require.main === module) {
+  main().catch((err) => {
+    console.error('Unhandled error:', err.message);
+  });
+}
+
+module.exports = { resolveHookProjectId };
