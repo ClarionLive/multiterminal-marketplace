@@ -449,7 +449,13 @@ Agent(subagent_type="debugger", ...)                                   # Claude
 
 After dispatch, Claude gates return inline (report-saving per Step 3.1) and Codex gates run in the background (polling + parsing per Step 3.2).
 
-### 3.1. Save Claude Gate Reports (MANDATORY — as each returns)
+#### 3.0.1 Gate agent lifecycle (spawn ephemeral; clean up whatever persists)
+
+Gate agents are ONE-SHOT: they produce a single report and have no further job. Spawn them as plain **ephemeral subagents** — do NOT pass a `name:` to the Agent tool. Named agents become persistent, mailbox-addressable teammates that go **idle** after reporting instead of terminating; across a 2-run pipeline that leaves ~10 zombie agents open until someone notices (Owner-reported, 2026-07-12). Unnamed subagents deliver their final text as the tool result / task notification and close naturally — which also kills the "agent went idle without reporting" failure mode, since the report IS the return value.
+
+If the harness makes a gate persistent anyway (some environments treat every Agent spawn as a teammate), or you deliberately named one:
+- Send `SendMessage({to: <gate>, message: {type: "shutdown_request", reason: "report saved — pipeline gate complete"}})` **immediately after saving that gate's report** (per-gate, not batched at the end — a re-run failure or context break must not orphan them).
+- At the end of every run (pass OR fail), sweep: confirm no gate agents from this run are still open; shut down any stragglers before presenting the dashboard.
 
 Each `claude`-dispatched Phase-2 gate that returns inline must have its report saved immediately via `save_task_report`. Do NOT wait for all agents — save each one as it returns. The UI shows review badges (Build/Quality/Security/Debug/Adversary) based on saved reports. Without saving, badges remain as hourglasses even after the pipeline passes clean.
 
@@ -798,3 +804,4 @@ save_task_report(
 - **Proportional detail**: Show full details for failures, brief summaries for passes.
 - **Content search**: Use `mcp__multiterminal__search_code` for finding files, NOT Grep.
 - **No user names in output**: Refer to "the user" or "the tester", never by personal name.
+- **No zombie gates**: Spawn gate agents ephemeral (no `name:` — see §3.0.1). If any gate ended up persistent, shutdown_request it right after its report is saved, and sweep for stragglers before presenting the dashboard. A finished pipeline leaves ZERO gate agents open.
