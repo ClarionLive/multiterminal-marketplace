@@ -58,6 +58,8 @@ function call(fs, envOverride = {}) {
   const r = call(fs);
   ok(r.exitCode === 0, 'band-80 exit 0');
   ok(r.stdout && r.stdout.includes('🟠') && r.stdout.includes('85%'), 'band-80 emits 🟠 nudge with pct');
+  ok(r.stdout.includes('compact_my_context') && r.stdout.includes('clear_my_context'),
+    'band-80 offers BOTH compact and clear (agent chooses)');
   const marker = JSON.parse(fs._store.get(markerPath));
   ok(marker.band === 80, 'band-80 marker persisted at 80');
 }
@@ -80,6 +82,8 @@ function call(fs, envOverride = {}) {
   });
   const r = call(fs);
   ok(r.stdout && r.stdout.includes('🔴') && r.stdout.includes('92%'), 'escalation emits 🔴 at 90 band');
+  ok(r.stdout.includes('compact_my_context') && r.stdout.includes('clear_my_context'),
+    'band-90 offers BOTH compact and clear (agent chooses)');
   ok(JSON.parse(fs._store.get(markerPath)).band === 90, 'escalation marker bumped to 90');
 }
 
@@ -127,6 +131,15 @@ function call(fs, envOverride = {}) {
   const fs = memFs({ [noDocPath]: statusFile(91) });
   const r = run({}, { fs, tmp: TMP, now: NOW, env: { MULTITERMINAL_NAME: NAME } });
   ok(r.stdout && r.stdout.includes('🔴'), 'readdir fallback resolves file → 🔴 at 91%');
+}
+
+// ── 10. 🟡 band (lowest) also offers BOTH compact and clear ──
+{
+  const fs = memFs({ [statusPath]: statusFile(72) });
+  const r = call(fs);
+  ok(r.stdout && r.stdout.includes('🟡') && r.stdout.includes('72%'), 'band-70 emits 🟡 nudge with pct');
+  ok(r.stdout.includes('compact_my_context') && r.stdout.includes('clear_my_context'),
+    'band-70 offers BOTH compact and clear (agent chooses)');
 }
 
 console.log(`context-threshold run() unit: PASS (${passed} assertions)`);

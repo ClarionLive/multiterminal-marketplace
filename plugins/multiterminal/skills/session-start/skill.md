@@ -1,7 +1,7 @@
 ---
 name: session-start
 description: Auto-run at session start. Lightweight startup menu — presents quick choices (continue task, new task, pick task, just chat) so the user decides how to spend the session. No heavy loading until a choice is made.
-version: 2.0.0
+version: 2.1.0
 ---
 
 # session-start
@@ -37,9 +37,10 @@ Before anything else, you MUST identify yourself:
 
 ### 2. Read Previous Session + Active Task
 
-**Call both in parallel:**
+**Call all three in parallel:**
 1. `get_latest_session(projectPath=PROJECT_ROOT, agentName=YOUR_NAME, skip=0, excludeSessionId=YOUR_SESSION_ID)` — returns the previous session with its **summary**. This call auto-ensures the session is fully processed (imports messages, indexes chunks, generates summary on demand). The summary it returns is reliable — trust it.
 2. `get_my_active_task(agentName=YOUR_NAME)` — checks for your current active task on the kanban board.
+3. **Remote-mode detection:** run `curl -s http://localhost:5050/api/remote-mode` (Bash). Response is `{"remote_mode":true}` or `{"remote_mode":false}`. Save the boolean as REMOTE_MODE for the greeting (step 3). If the call fails or the JSON has no `remote_mode` key (API down, older MT build), treat it as **unknown** — skip the remote-mode line in the greeting entirely; do NOT retry or block on it.
 
 **How to use the results:**
 - `get_latest_session` returns a summary. **Use this summary as your primary context** for the greeting. It's generated from the actual session messages and describes what was worked on.
@@ -72,6 +73,11 @@ This is the session-start analog of the `task_active_changed` channel event (ful
 ### 3. Brief Greeting + Context Summary
 
 Summarize what the **previous session** was about in 2-3 sentences based on the summary from `get_latest_session`. Lead with what you were *doing* (e.g., "Last session we were fixing the HUD dashboard to filter recent activity by project"). Then mention the active task if relevant.
+
+**Remote-mode status line:** if REMOTE_MODE resolved in step 2, append one line to the greeting:
+- `Remote mode: ON — the owner is away; questions route to their phone (follow the Remote Question Protocol in CLAUDE.md).`
+- `Remote mode: OFF — the owner is at the desk; ask questions in chat as normal.`
+- If REMOTE_MODE is unknown (fetch failed), omit the line — never guess.
 
 If there's also a Last Session Recap in the system reminders from the hook, incorporate that too.
 
@@ -121,4 +127,4 @@ Stop after presenting the AskUserQuestion. Do NOT run any other skills until the
 
 ---
 
-**Key principle:** This skill is FAST. One env var check, one register_terminal call, one register_session call (registers this session + closes previous), two parallel MCP calls (get_latest_session with auto-ensure-ready + active task), and an interactive menu. The session lifecycle pipeline guarantees the previous session's summary is available. When routing, go DIRECTLY to the skill — don't add extra steps.
+**Key principle:** This skill is FAST. One env var check, one register_terminal call, one register_session call (registers this session + closes previous), three parallel calls (get_latest_session with auto-ensure-ready + active task + remote-mode curl), and an interactive menu. The session lifecycle pipeline guarantees the previous session's summary is available. When routing, go DIRECTLY to the skill — don't add extra steps.

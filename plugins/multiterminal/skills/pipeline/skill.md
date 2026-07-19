@@ -1,7 +1,7 @@
 ---
 name: pipeline
-description: "Runs the full agent review pipeline — verifier, code-reviewer, security-auditor, debugger, and cross-model adversary — in one command, dispatching each gate to Claude, Codex, or off per the user's saved topology. Verifier runs first (must pass build), then the others run in parallel. Failures cycle back as coding items. Loops until 100% pass. Triggers on: '/pipeline', 'run the pipeline', 'full review', 'run all gates'."
-version: 3.0.0
+description: "Runs the agent review pipeline — verifier, code-reviewer, security-auditor, debugger, and cross-model adversary — sized to the diff: SMALL diffs get 2 gates and 1 run, larger ones the full topology. Verifier runs first (must pass build), then the others run in parallel. Blocking failures cycle back as coding items and re-run within the tier's run budget; non-blocking findings are filed to a follow-up ticket by default. Triggers on: '/pipeline', 'run the pipeline', 'full review', 'run all gates'."
+version: 3.1.0
 ---
 
 # Agent Review Pipeline
@@ -123,6 +123,23 @@ On not-ready, demote every gate with value `"codex"` to `"claude"` and log:
 **Do not fail the pipeline on readiness failure** — graceful degrade preserves pre-Part-2 behaviour for users without Codex installed.
 
 If `ready === true`, keep topology as-is and set `CODEX_READY = true`. All codex-mapped gates will dispatch via `node codex-companion.mjs adversarial-review` in Phase 1 / Phase 2 below.
+
+### 0.6 Proportionality Tier (MANDATORY — size the pipeline to the diff)
+
+A 3-line reporting tweak must not get the same 13-gate-invocation treatment as a security-critical feature. Real cost data (task 2f7280c2, 2026-07-15): a ~40-line cosmetic JS fix consumed 3 full runs and ~400k subagent tokens; the base fix was shippable after Run 1. Classify BEFORE dispatching:
+
+**SMALL** — ALL of: single file (or file + its test), no C# / no build-surface change, no auth/IO/network/persistence surface touched, < ~100 changed LOC, reporting/display/logging/comment/test-only in nature.
+→ Run **verifier + ONE reviewer only** (code-reviewer by default; security-auditor instead if the diff is anywhere near input handling). Skip the rest — log the skip with the tier as the reason. **Run budget: 1** (a 2nd run only if a BLOCKING failure was fixed).
+
+**MEDIUM** — multi-file or 100-500 LOC or touches runtime behavior, but no auth/security surface and no new external inputs.
+→ Full enabled topology. **Run budget: 2.**
+
+**LARGE** — security surface, new external inputs, C# + deploy path, schema/contract changes, or > 500 LOC.
+→ Full enabled topology, existing 3+-run escalation rules apply.
+
+Log the tier and what it excludes: `Tier: SMALL — dispatching verifier + code-reviewer; security/debugger/adversary skipped (display-only JS diff).` The user can override with `--full` (force LARGE treatment) or by saying so.
+
+**When the run budget is exhausted** and non-blocking findings remain: file them to a follow-up ticket and present the dashboard — do NOT keep looping. Blocking failures always override the budget (they must be fixed and re-verified), but see Step 5.0 for what "re-verified" costs.
 
 ### 1. Gather Context
 
@@ -459,6 +476,8 @@ If the harness makes a gate persistent anyway (some environments treat every Age
 
 Each `claude`-dispatched Phase-2 gate that returns inline must have its report saved immediately via `save_task_report`. Do NOT wait for all agents — save each one as it returns. The UI shows review badges (Build/Quality/Security/Debug/Adversary) based on saved reports. Without saving, badges remain as hourglasses even after the pipeline passes clean.
 
+**Context hygiene (both directions):** (a) Every gate prompt must include: "Keep the report under ~600 words plus the verdict block — findings belong in the verdict block's structured lines, not restated in prose." Gate reports are consumed by the verdict parser and the report DB, not by a human reading the transcript. (b) Save the gate's returned text **verbatim** as the report — do not rewrite, expand, or annotate it into a second near-copy (each rewrite pays the report's token cost twice in the orchestrator's context). A one-line header (run number, mapped verdict) is the only permitted addition. (c) Handoff blocks passed to later gates carry the VERDICT BLOCK ONLY of prior reports, not their full text.
+
 For each `claude`-dispatched gate, use the `agentName` slug matching the subagent:
 
 | Role | `agentName` slug | Extra fields |
@@ -711,7 +730,15 @@ Each gate section carries a **provider badge** (`CLAUDE` / `CODEX` / `OFF`) so t
 
 ### 5. Failure Routing (Fix and Re-Run Loop)
 
-**If overall verdict is ALL PASS → Skip this step. Pipeline is done.**
+#### 5.0 Non-blocking findings DEFER by default; fixes get DELTA re-review, never a full re-run
+
+Two rules that exist because their absence is expensive (task 2f7280c2: every accepted non-blocking fix cascaded into a full re-run):
+
+1. **Non-blocking findings (MEDIUM/MINOR/NIT, PASS_WITH_* verdicts) are FILED, not fixed.** Default action: add them to an existing follow-up ticket or create one, note it in the dashboard, done. Do NOT present them to the user as "fix now? (Recommended)" — that framing converts advisory findings into scope creep. Only offer the in-place fix when the finding is (a) in code THIS task introduced AND (b) a few lines AND (c) squarely in the ticket's own theme; even then, present "defer" first.
+
+2. **If the user does elect an in-place fix of a non-blocking finding: re-review the DELTA only.** Dispatch ONLY the gate that raised the finding (plus the verifier IF the fix touched anything beyond the flagged lines), with a prompt scoped to "did this fix resolve your finding and introduce nothing new?". Gates whose concerns didn't change do NOT re-run — record their prior verdict in the next dashboard with a `(carried from Run N — delta was outside this gate's concern)` note. A test-only or comment-only delta never re-triggers debugger/security.
+
+**If overall verdict is ALL PASS → Skip the rest of this step. Pipeline is done.**
 
 If there are blocking failures:
 
@@ -799,7 +826,8 @@ save_task_report(
 - **Skipped gates are not failures**: `off`-mapped gates contribute nothing to the failure list. Visible in the dashboard as `SKIPPED`, but don't gate the Overall verdict.
 - **Graceful degrade for Codex**: If Codex is not ready (plugin missing, not authenticated), demote Codex-mapped gates to Claude with a banner — never fail the pipeline for a tooling miss.
 - **Blocking failures must be fixed**: Do not present code for user testing if any enabled gate has blocking findings.
-- **Loop until clean**: The pipeline re-runs after fixes. It doesn't stop until ALL PASS or escalation.
+- **Proportionality first**: Tier the diff (Step 0.6) before dispatching. SMALL diffs get 2 gates and 1 run; nobody spends 400k tokens re-reviewing a display tweak.
+- **Loop until clean — on BLOCKING findings only, within the tier's run budget**: The pipeline re-runs after blocking fixes. Non-blocking findings are filed to a follow-up ticket by default (Step 5.0); an elected non-blocking fix gets a delta re-review by the raising gate, never a full re-run.
 - **The user only tests clean code**: The entire point is that the user never sees code that hasn't survived the enabled reviewer set.
 - **Proportional detail**: Show full details for failures, brief summaries for passes.
 - **Content search**: Use `mcp__multiterminal__search_code` for finding files, NOT Grep.

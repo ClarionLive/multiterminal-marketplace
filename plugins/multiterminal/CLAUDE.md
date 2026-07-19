@@ -50,9 +50,12 @@ You can see, compact, and clear your own context window. Three MCP tools:
 
 1. **Finish your current step** — do not stop mid-edit, mid-build, or mid-thought. *You* choose the clean continuation point.
 2. **Write continuation notes** with `update_task_continuation` (and make sure your active task captures exactly where to resume: current file, checklist state, next action).
-3. **Then call `clear_my_context` with `acknowledge:true` as the LAST action of your turn.** SessionStart rebuilds you from your continuation notes + the session summary.
+3. **Then reclaim context — YOU pick compact vs clear (per line 45):**
+   - **Mid-task** (deep in work, just need headroom): call **`compact_my_context`** — it preserves a running summary so you keep your place and continue.
+   - **At a task-end / clean boundary** (a full reset is what you want): call **`clear_my_context` with `acknowledge:true`** as the LAST action of your turn — SessionStart rebuilds you from your continuation notes + the session summary.
+   - Higher bands lean harder toward reclaiming *now* (🔴 = do it this turn), but the compact-vs-clear choice is still yours — the hook nudge names both.
 
-This is deliberately self-managed: you summarize your own work and clear at a point YOU judge best, instead of relying on auto-compact's summary-of-a-summary drift. Don't ignore a persistent 🔴 nudge — but don't clear in the middle of something either. Pick the boundary.
+This is deliberately self-managed: you summarize your own work and compact/clear at a point YOU judge best, instead of relying on auto-compact's summary-of-a-summary drift. Don't ignore a persistent 🔴 nudge — but don't wipe in the middle of something either; compact to keep going, or pick a boundary to clear.
 
 ---
 
@@ -152,33 +155,49 @@ You only have ~500ms before the prune runs. Process the event in your next turn 
 
 The owner can be marked **remote** (away from the desktop) via the UI, or auto-inferred from an `X-Source: phone` request header. When remote, they will NOT see questions you type into chat until they return to the desk.
 
-**Rule: every time you would ask the owner a question, also send a push notification.** Don't probe remote state first — the server (`NotificationsController.ForwardToClaudeRemoteAsync`) silently drops the forward when the owner is at the desktop, so this is always safe.
+**Rule: when you need an answer from the owner, use `ask_owner`.** It is the preferred, atomic way to ask — one call pushes the question, blocks until the owner taps a reply (or the timeout elapses), and returns the answer to you. It auto-detects remote mode, so **do NOT probe remote state first** and do not hand-roll the old "push + chat question" split (see the deprecated fallback below).
 
-### How to ask
+### How to ask — `ask_owner` (preferred)
 
 ```
-send_push_notification(
-  notification_type="permission_request",
+ask_owner(
+  question="<the decision, phrased so it reads on a phone hours later>",
   agent_name="YourName",
-  message="<what I'm doing> — need: <the question/choices>"
+  context="<optional: what you're doing / why it matters>",
+  options=[{label:"Default path", value:"default"}, {label:"Custom", value:"custom"}],
+  timeout_seconds=120,          // optional; omit for the server's 5-min relay window
+  default_choice="default"      // optional; applied if the owner doesn't answer in time
 )
 ```
 
-Then ask the question in chat as usual. Desktop owner sees chat. Remote owner gets the push telling them a decision is waiting.
+The call returns an answer plus a **`source`** telling you what happened:
+
+- **`owner`** (`📱 Owner answered: <value>`) — they tapped a reply on the phone. Use it.
+- **`default`** (`⏱️ … proceeding with default`) — timed out, your `default_choice` was applied. Proceed.
+- **`timeout`** (`⏱️ … no default_choice was set`) — timed out and you gave no default. Decide yourself or ask in chat and move on to other work.
+- **`local`** (`🖥️ Remote mode is OFF …`) — the owner is at the desk (or the relay isn't configured). **Ask the question in chat as normal** — this is your fallback signal, not an error.
+
+So a single `ask_owner` covers both worlds: remote → phone round-trip; at-desk → `local` sentinel telling you to just ask in chat.
 
 ### Format (~160 char budget)
 
-- **Line 1:** what you're doing (compressed context — e.g. "Installer task — picking build path")
-- **Line 2:** what you need ("Use default C:\Program Files? yes / custom / skip")
+Whether via `ask_owner` (`question` + `context`) or a raw push, keep it phone-readable:
 
-Include enough context that when the owner sees the push hours later, they still know what it's about. Don't assume they'll read chat first.
+- **Line 1 / context:** what you're doing (compressed — e.g. "Installer task — picking build path")
+- **Line 2 / question:** what you need ("Use default C:\Program Files? yes / custom / skip")
+
+Include enough context that when the owner sees it hours later, they still know what it's about. Don't assume they'll read chat first.
 
 ### Batching
 
-Consolidate related decisions into ONE push with numbered options. A phone round-trip is minutes — don't fire 3 serial pushes when 1 will do.
+Consolidate related decisions into ONE `ask_owner` with numbered/labeled options. A phone round-trip is minutes — don't fire 3 serial asks when 1 will do.
 
-- Bad: 3 pushes for 3 related choices.
-- Good: `"Reviewing installer config — choose: 1) default path 2) prompt user 3) env var"`
+- Bad: 3 asks for 3 related choices.
+- Good: `options=[{label:"default path",value:"default"},{label:"prompt user",value:"prompt"},{label:"env var",value:"env"}]`
+
+### Deprecated: manual push + chat split
+
+The old pattern — `send_push_notification(notification_type="permission_request", …)` followed by asking in chat — is **superseded by `ask_owner`** for anything that needs an answer. `ask_owner` pushes, waits, and returns the reply atomically instead of leaving you to poll chat. Keep `send_push_notification` only for the **FYI / default-and-notify** case below (a push that needs no blocking reply).
 
 ### Default-and-notify (low-stakes)
 
@@ -192,17 +211,17 @@ send_push_notification(
 )
 ```
 
-Reserve blocking asks (`permission_request`) for real forks where the wrong default is expensive to undo.
+Reserve blocking asks (use `ask_owner`) for real forks where the wrong default is expensive to undo.
 
 ### Testing pass/fail carve-out
 
-Checklist items moving to `testing` are expected to stream one at a time. One short push per item is fine:
-
-- `"Item 2: fix session-start skip=1 — pass/fail?"`
+Checklist items moving to `testing` are expected to stream one at a time. Ask per item with `ask_owner(question="Item 2: fix session-start skip=1 — pass/fail?", options=[{label:"pass",value:"pass"},{label:"fail",value:"fail"}])`; when the owner is at the desk it returns `source:local` and you just ask in chat.
 
 ### notification_type choices
 
-- `permission_request` — default for asks that need an answer
+These apply to `send_push_notification` (FYI-style pushes). Blocking asks that need an answer should use `ask_owner` instead.
+
+- `permission_request` — a decision is waiting (prefer `ask_owner`, which pushes + waits + returns the answer)
 - `escalation` — blocker / stuck / truly need the human
 - `ready_for_testing` — whole task ready for owner QA
 - `task_complete` — entire task done

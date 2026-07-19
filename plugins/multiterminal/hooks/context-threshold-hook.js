@@ -139,21 +139,31 @@ function run(hookData, opts = {}) {
   }
 
   const pctStr = Math.round(pct);
+  // Every band leaves the compact-vs-clear CHOICE to the agent (it knows whether
+  // it's mid-task or at a boundary; the hook doesn't). Rule of thumb, same in
+  // every band: compact_my_context = mid-task, preserve a summary and keep going;
+  // clear_my_context (acknowledge:true) = task boundary, full reset + SessionStart
+  // rebuild. Continuation-notes-first regardless (the auto-summary is lossy).
   let msg;
   if (band >= 90) {
     msg =
-      `🔴 Context at ${pctStr}% — very full. Clear soon to stay ahead of auto-compact. ` +
-      `Finish the immediate step, write continuation notes (update_task_continuation), ` +
-      `then call clear_my_context (acknowledge:true) as your last action.`;
+      `🔴 Context at ${pctStr}% — very full; reclaim now to stay ahead of auto-compact. ` +
+      `Finish the immediate step, write continuation notes (update_task_continuation), then as ` +
+      `your LAST action either call clear_my_context (acknowledge:true) for a full reset if you're ` +
+      `at a clean boundary, OR compact_my_context if you must keep going mid-task (lighter — ` +
+      `preserves a summary). You choose which; don't stop mid-edit either way.`;
   } else if (band >= 80) {
     msg =
       `🟠 Context at ${pctStr}%. Wrap up at the next clean boundary: write continuation notes ` +
-      `(update_task_continuation), then call clear_my_context to reset before continuing.`;
+      `(update_task_continuation), then reclaim context — compact_my_context to preserve your ` +
+      `place and continue if you're mid-task, OR clear_my_context (acknowledge:true) for a fresh ` +
+      `reset if you're at a task boundary. Pick based on mid-task vs done.`;
   } else {
     msg =
-      `🟡 Context at ${pctStr}% (≥${threshold}% nudge threshold). Good time to aim for a stopping ` +
-      `point soon — when you reach one, write continuation notes (update_task_continuation) and ` +
-      `call clear_my_context. You choose the moment; this is just a heads-up.`;
+      `🟡 Context at ${pctStr}% (≥${threshold}% nudge threshold). Aim for a clean stopping point ` +
+      `soon — when you reach one, write continuation notes (update_task_continuation), then either ` +
+      `compact_my_context (mid-task, keeps a summary so you continue) or clear_my_context ` +
+      `(acknowledge:true, at a boundary, for a full reset). You choose which and when — heads-up only.`;
   }
 
   // Plain stdout → Claude Code surfaces it as additional context. Advisory only.
