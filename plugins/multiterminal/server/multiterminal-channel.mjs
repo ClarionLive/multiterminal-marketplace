@@ -264,6 +264,66 @@ async function sendViaApi(to, message, priority) {
   return `Message sent to ${to}`;
 }
 
+// ─── Recipient verification + replay dedup (GH#7, ticket 6b093a22) ───────────
+//
+// This server used to accept ANY POST to its port and inject it into this
+// agent's session. MultiTerminal delivers by POSTing to the recipient's LAST
+// RECORDED port and treats any 2xx as proof of delivery, so a stale or reused
+// port silently routed one agent's messages into another agent's session — and
+// the broker marked them delivered. That is the "Diana loses everything while
+// Eve receives fine" signature in GH#7, and it cannot be fixed broker-side:
+// only the process that owns the port knows who it actually is.
+//
+// MT ticket 405273fd added `id` and `to` to the channel payload specifically so
+// this check could exist. This is that check.
+
+const SEEN_MESSAGE_TTL_MS = 10 * 60 * 1000;
+const SEEN_MESSAGE_MAX = 500;
+
+/** messageId -> receipt timestamp. Map iteration is insertion-ordered, which pruning relies on. */
+const seenMessageIds = new Map();
+
+/**
+ * True when a payload is addressed to this agent.
+ *
+ * A payload with NO `to` is ACCEPTED. That is deliberate and load-bearing:
+ * older MT builds (pre-405273fd) omit the field entirely, and rejecting those
+ * would silently break messaging for every agent running against an older
+ * backend. We reject only on positive evidence of misdelivery — `to` present
+ * AND naming somebody else.
+ */
+function isAddressedToMe(to) {
+  if (to === undefined || to === null || to === '') return true;
+  return String(to).toLowerCase() === AGENT_NAME.toLowerCase();
+}
+
+/**
+ * True when this message id has already been injected recently.
+ *
+ * MT keeps a failed delivery retryable while ALSO writing an inbox-file copy,
+ * so a recovered channel can legitimately receive a message the agent already
+ * saw. Deduping here is what makes that belt-and-retry design safe.
+ * Payloads without an id are never deduped (nothing to key on).
+ */
+function isDuplicateMessage(id) {
+  if (id === undefined || id === null || id === '') return false;
+  const key = String(id);
+
+  const cutoff = Date.now() - SEEN_MESSAGE_TTL_MS;
+  for (const [seenId, at] of seenMessageIds) {
+    if (at >= cutoff) break; // insertion-ordered: first fresh entry ends the sweep
+    seenMessageIds.delete(seenId);
+  }
+
+  if (seenMessageIds.has(key)) return true;
+
+  seenMessageIds.set(key, Date.now());
+  while (seenMessageIds.size > SEEN_MESSAGE_MAX) {
+    seenMessageIds.delete(seenMessageIds.keys().next().value);
+  }
+  return false;
+}
+
 // ─── HTTP Server: receive messages from other agents/broker ──────────────────
 
 const httpServer = http.createServer(async (req, res) => {
@@ -288,6 +348,32 @@ const httpServer = http.createServer(async (req, res) => {
       const content = msg.message || msg.content || body;
       const priority = msg.priority || 'normal';
       const messageType = msg.messageType || 'direct';
+
+      // Wrong recipient — someone else's message arrived on our port (stale/reused
+      // port). Refuse it. 409 is deliberately NON-2xx: MT treats any 2xx as proof of
+      // delivery, so answering 200 here is exactly how these messages used to be
+      // marked delivered and lost. A non-2xx leaves the queue row retryable, and the
+      // message reaches its real recipient once the port record corrects itself.
+      if (!isAddressedToMe(msg.to)) {
+        log(`REFUSED message ${msg.id ?? '?'} from ${from}: addressed to "${msg.to}", but this port belongs to ${AGENT_NAME}`);
+        res.writeHead(409, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({
+          status: 'wrong_recipient',
+          agent: AGENT_NAME,
+          addressedTo: msg.to,
+        }));
+        return;
+      }
+
+      // Already injected — a Tier-3 retry after the inbox-file belt already ran, or
+      // a double-send. 2xx (not 409): the message genuinely reached this agent, just
+      // earlier, so MT should mark it delivered rather than retry it forever.
+      if (isDuplicateMessage(msg.id)) {
+        log(`Ignored duplicate message ${msg.id} from ${from} (already delivered)`);
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ status: 'duplicate_ignored', agent: AGENT_NAME }));
+        return;
+      }
 
       // Check for permission verdict reply (e.g. "yes abcde", "no abcde", or "always abcde")
       const verdict = PERMISSION_REPLY_RE.exec(content);
