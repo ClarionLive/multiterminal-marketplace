@@ -12,7 +12,7 @@
  * (no-name / no-file) branches.
  */
 const assert = require('assert');
-const { run } = require('../inbox-check-hook.js');
+const { run, formatMessage } = require('../inbox-check-hook.js');
 
 function stubFs(content) {
   let present = content !== null;
@@ -58,4 +58,103 @@ assert.strictEqual(r5.stdout, undefined, 'no name → no stdout');
 const r6 = run({}, { hookType: 'Stop', name: 'Tester', inboxPath: 'mem', fs: stubFs('[]') });
 assert.strictEqual(r6.stdout, undefined, 'empty inbox → no stdout');
 
-console.log('inbox-check run() unit: PASS (6 assertions)');
+// ── Defect 2 (ticket 6b093a22, GH#7): messages must never be dropped ─────────
+//
+// The old formatter was `if (msg && sender && content)`, which silently skipped
+// any entry it did not recognise — no line, no log, no trace. Three distinct
+// ways to lose mail, all invisible to the recipient. Every case below produced
+// NOTHING before the fix; each must now produce exactly one line.
+//
+// These drive formatMessage() directly where the assertion is about rendering,
+// and run() where the assertion is about the surrounding drop/​exit behaviour.
+
+let d2 = 0;
+function chk(cond, msg) { assert.ok(cond, msg); d2++; }
+
+// D1: the channel POST shape ({from, message}) was never accepted — `message`
+// was not in the key list and `Sender`/`sender` were absent. It vanished.
+{
+  const line = formatMessage({ from: 'Diana', message: 'channel-shaped payload' });
+  chk(line === '[Diana]: channel-shaped payload', `D1 channel shape must render, got ${JSON.stringify(line)}`);
+}
+
+// D2: an EMPTY body is falsy, so it failed the `&&` and the message was dropped
+// instead of being shown as empty. THE headline defect.
+{
+  const line = formatMessage({ sender: 'Diana', content: '' });
+  chk(line.startsWith('[Diana]: (empty message'), `D2 empty body must render a marker, got ${JSON.stringify(line)}`);
+}
+
+// D3: whitespace-only counts as empty — matches the channel server and MT's own
+// store-side IsNullOrWhiteSpace guard (commit 6f89d11), so all three agree.
+{
+  const line = formatMessage({ sender: 'Diana', content: '   \n\t ' });
+  chk(line.startsWith('[Diana]: (empty message'), `D3 whitespace body must render a marker, got ${JSON.stringify(line)}`);
+}
+
+// D4: an unrecognised shape is surfaced and LABELLED, not dropped.
+{
+  const line = formatMessage({ sender: 'Diana', bodyText: 'wrong key entirely' });
+  chk(line.startsWith('[Diana]: (unrecognised inbox entry'), `D4 unknown shape must be surfaced, got ${JSON.stringify(line)}`);
+  chk(line.includes('bodyText'), 'D4 diagnostic includes the payload so the shape is debuggable');
+}
+
+// D5: a missing sender must not take the message down with it.
+{
+  const line = formatMessage({ content: 'no sender on this one' });
+  chk(line === '[unknown sender]: no sender on this one', `D5 senderless message must still render, got ${JSON.stringify(line)}`);
+}
+
+// D6: non-object entries are rendered, not skipped.
+{
+  chk(formatMessage(null).includes('unreadable inbox entry'), 'D6 null entry rendered');
+  chk(formatMessage('bare string').includes('unreadable inbox entry'), 'D6 string entry rendered');
+}
+
+// D7: NEGATIVE FIXTURE — ordinary mail is untouched by all of the above.
+{
+  chk(formatMessage({ sender: 'Bob', content: 'build is green' }) === '[Bob]: build is green', 'D7 sender/content verbatim');
+  chk(formatMessage({ Sender: 'Grace', Content: 'ping me back' }) === '[Grace]: ping me back', 'D7 Sender/Content verbatim');
+}
+
+// D8: an empty key must not shadow a filled sibling.
+{
+  const line = formatMessage({ sender: 'Diana', content: '', message: 'the real text' });
+  chk(line === '[Diana]: the real text', `D8 first NON-EMPTY key should win, got ${JSON.stringify(line)}`);
+}
+
+// D9: THE SILENT-BATCH BUG, end to end. A batch where every entry is
+// unrecognised used to filter down to lines.length === 1 → exit 0, NO STDOUT —
+// indistinguishable from having no mail at all.
+{
+  const allOdd = JSON.stringify([{ from: 'Diana', message: '' }, { from: 'Eve', bodyText: 'x' }]);
+  const r = run({}, { hookType: 'Stop', name: 'Tester', inboxPath: 'mem', fs: stubFs(allOdd) });
+  chk(r.stdout !== undefined, 'D9 a batch of unrecognised messages must NOT be silent');
+  const reason = JSON.parse(r.stdout).reason;
+  chk(reason.includes('(empty message'), 'D9 the empty one is surfaced');
+  chk(reason.includes('Eve'), 'D9 the odd-shaped one is surfaced');
+}
+
+// D10: MIXED BATCH — the original live repro. The empty message used to vanish
+// while its siblings rendered, so even a working delivery hid the loss.
+{
+  const mixed = JSON.stringify([
+    { sender: 'Bob', content: 'first' },
+    { sender: 'Diana', content: '' },
+    { sender: 'Grace', content: 'third' },
+  ]);
+  const r = run({}, { hookType: 'PostToolUse', name: 'Tester', inboxPath: 'mem', fs: stubFs(mixed) });
+  const body = r.stdout.split('\n');
+  chk(body.length === 4, `D10 header + 3 messages = 4 lines, got ${body.length}: ${JSON.stringify(body)}`);
+  chk(body[2].startsWith('[Diana]: (empty message'), `D10 Diana's empty message keeps its slot, got ${JSON.stringify(body[2])}`);
+}
+
+// D11: NEGATIVE FIXTURE — genuinely having no mail must still be silent. The
+// fix must not turn "no messages" into noise.
+{
+  const r = run({}, { hookType: 'Stop', name: 'Tester', inboxPath: 'mem', fs: stubFs('[]') });
+  chk(r.stdout === undefined, 'D11 an empty inbox array is still silent');
+}
+
+console.log(`inbox-check run() unit: PASS (6 assertions)`);
+console.log(`inbox-check defect-2 no-silent-drop: PASS (${d2} assertions)`);

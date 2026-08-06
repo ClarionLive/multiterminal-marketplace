@@ -324,6 +324,86 @@ function isDuplicateMessage(id) {
   return false;
 }
 
+// ─── Message body resolution (GH#7, ticket 6b093a22 defect 1) ────────────────
+//
+// The old chain was:
+//
+//     const content = msg.message || msg.content || body;
+//
+// which reads as defensive but conflates three very different situations,
+// because an EMPTY STRING is falsy:
+//
+//   key absent            -> fall through to the next shape.   CORRECT, and
+//                            load-bearing: the inbox-file shape uses `Content`
+//                            while the channel POST uses `message`.
+//   key present but EMPTY -> ALSO fell through — past `content`, past
+//                            everything, all the way to `body`, the raw request
+//                            text. The agent was then shown
+//                            `{"from":"Bob","message":"","id":42,...}` as if
+//                            that JSON were the message Bob had typed.
+//                            Verified live on message 6889.
+//   no body key at all    -> same raw-envelope dump.
+//
+// Rendering an envelope as content is worse than rendering nothing: it is
+// indistinguishable from a sender who genuinely typed JSON, so the reader
+// cannot tell a delivery bug from a weird colleague. Each case is now named
+// explicitly and the envelope is NEVER passed off as somebody's words.
+//
+// Kept deliberately in sync with hooks/inbox-check-hook.js, which had the
+// mirror-image defect (it dropped these payloads silently instead). The logic
+// is duplicated rather than shared because that hook is CJS under hooks/ while
+// this is an ESM module under server/ with its own package.json and
+// node_modules — a shared import across that boundary costs more than 20 lines
+// of duplication. If you change the semantics here, change them there too.
+
+const EMPTY_BODY_MARKER = '(empty message — the sender delivered a blank body)';
+
+/** Bounded, single-line preview of an unrecognised payload, for diagnostics. */
+function previewPayload(raw, max = 300) {
+  const text = String(raw ?? '').replace(/\s+/g, ' ').trim();
+  return text.length > max ? `${text.slice(0, max)}…` : text;
+}
+
+/**
+ * Resolve the human-readable body of an inbound payload.
+ *
+ * Returns a string that is ALWAYS safe to `.substring()` and to inject as
+ * channel content. When the payload carries nothing renderable, the string is
+ * an explicit, self-describing marker rather than the envelope.
+ *
+ * @param {unknown} msg     the parsed payload
+ * @param {string}  rawBody the original request text (diagnostics only — never
+ *                          returned as if it were the sender's message)
+ */
+function resolveContent(msg, rawBody) {
+  // A bare JSON string payload IS the message.
+  if (typeof msg === 'string') {
+    return msg.trim() === '' ? EMPTY_BODY_MARKER : msg;
+  }
+
+  // `Content` is accepted too: it is the documented inbox-file shape
+  // ([{Id, Sender, Content, Timestamp}]), so honouring it keeps a
+  // correctly-shaped-but-unexpected payload out of the unrecognised branch.
+  let sawBodyKey = false;
+  if (msg !== null && typeof msg === 'object') {
+    for (const key of ['message', 'content', 'Content']) {
+      if (!(key in msg)) continue; // absent — try the next shape
+      sawBodyKey = true;
+      const value = msg[key];
+      if (value === null || value === undefined) continue;
+      const text = String(value);
+      if (text.trim() !== '') return text; // first non-empty wins
+    }
+  }
+
+  // A body key was there, it was just empty. Say exactly that.
+  if (sawBodyKey) return EMPTY_BODY_MARKER;
+
+  // No body key at all — an unrecognised shape. Show it LABELLED as a payload,
+  // never as if the sender had typed it, and never unbounded.
+  return `(unrecognised message payload — no "message" or "content" field: ${previewPayload(rawBody)})`;
+}
+
 // ─── HTTP Server: receive messages from other agents/broker ──────────────────
 
 const httpServer = http.createServer(async (req, res) => {
@@ -345,7 +425,7 @@ const httpServer = http.createServer(async (req, res) => {
     try {
       const msg = JSON.parse(body);
       const from = msg.from || 'unknown';
-      const content = msg.message || msg.content || body;
+      const content = resolveContent(msg, body);
       const priority = msg.priority || 'normal';
       const messageType = msg.messageType || 'direct';
 
@@ -442,7 +522,11 @@ const httpServer = http.createServer(async (req, res) => {
     try {
       const msg = JSON.parse(body);
       const from = msg.from || 'unknown';
-      const content = msg.message || msg.content || body;
+      // Same defect as POST /message had — a broadcast with an empty body
+      // rendered the raw envelope too. Recipient VERIFICATION is what /broadcast
+      // deliberately skips (a broadcast has no meaningful `to`); body rendering
+      // is not exempt.
+      const content = resolveContent(msg, body);
 
       await mcp.notification({
         method: 'notifications/claude/channel',
