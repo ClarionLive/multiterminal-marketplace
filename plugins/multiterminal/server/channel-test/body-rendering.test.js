@@ -259,10 +259,65 @@ async function main() {
     }
 
     // ── B10: the inbox-file shape is understood, not treated as unrecognised ──
+    // The `meta.from` assertion is the load-bearing half. An earlier revision
+    // understood this payload's BODY but still read the sender as `msg.from`
+    // only, so it rendered the right text attributed to "unknown" — a
+    // half-understood payload, and the test that omitted this line baked it in.
     {
       const { params } = await deliver('/message', { Sender: 'Bob', Content: 'file-shaped payload', id: 'b10', to: AGENT });
       ok(params?.content === 'file-shaped payload', `B10 expected Content-key support, got ${JSON.stringify(params?.content)}`);
-      console.log('  ✓ B10 inbox-file shape (`Content`) → rendered, not flagged unrecognised');
+      ok(params?.meta?.from === 'Bob', `B10 sender must resolve from Sender too, got ${JSON.stringify(params?.meta?.from)}`);
+      console.log('  ✓ B10 inbox-file shape (`Content`/`Sender`) → body AND sender both resolved');
+    }
+
+    // ── B11: an object-valued body must not become "[object Object]" ──────────
+    // `String(value)` silently destroyed structured content with no diagnostic —
+    // the exact class of loss this ticket exists to close, reintroduced by the
+    // fix for it. Three pipeline gates flagged this independently.
+    {
+      const { params } = await deliver('/message', { from: 'Bob', message: { type: 'text', text: 'real words' }, id: 'b11', to: AGENT });
+      ok(!params?.content.includes('[object Object]'), `B11 structured body must not stringify to [object Object], got ${JSON.stringify(params?.content)}`);
+      ok(params?.content.includes('real words'), `B11 structured body must stay readable, got ${JSON.stringify(params?.content)}`);
+      console.log('  ✓ B11 object-valued body → JSON-rendered, content preserved');
+    }
+
+    // ── B12: sender key precedence matches the inbox hook exactly ─────────────
+    // Both files now share one ordered key list. If someone re-inverts one of
+    // them, this and the hook's D12 disagree and the drift is caught.
+    {
+      const { params } = await deliver('/message', { from: 'Bob', sender: 'NotBob', message: 'precedence', id: 'b12', to: AGENT });
+      ok(params?.meta?.from === 'Bob', `B12 'from' must win over 'sender', got ${JSON.stringify(params?.meta?.from)}`);
+      console.log('  ✓ B12 sender precedence: from > sender (same order as the hook)');
+    }
+
+    // ── B13: THE PROCESS MUST SURVIVE AN ABORTED REQUEST ──────────────────────
+    // The body-read loop used to sit OUTSIDE the try/catch. A client that
+    // disconnected mid-body rejected the async iterator, and because the request
+    // handler is async that became an unhandled rejection: THE WHOLE PROCESS
+    // EXITED(1), taking channel delivery and the agent's reply/send MCP tools
+    // with it. One truncated POST to localhost was enough.
+    {
+      await new Promise((resolve) => {
+        const req = http.request(
+          { host: '127.0.0.1', port, path: '/message', method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'Content-Length': '500' } },
+          () => resolve());
+        req.on('error', () => resolve()); // the abort surfaces here; that's expected
+        req.write('{"from":"Bob","message":"truncated'); // far short of Content-Length
+        setTimeout(() => { req.destroy(); resolve(); }, 100);
+      });
+      await new Promise(r => setTimeout(r, 400));
+
+      // Still alive? Both checks matter: health proves the process, delivery
+      // proves the handler still works rather than merely the socket accepting.
+      let health = null;
+      try { health = await getHealth(port); } catch { /* server died */ }
+      ok(health !== null, 'B13 server must survive a client that aborts mid-body (it used to exit code 1)');
+
+      const { res, params } = await deliver('/message', { from: 'Bob', message: 'still here', id: 'b13', to: AGENT });
+      ok(res.status === 200, `B13 expected the server to keep serving, got ${res.status}`);
+      ok(params?.content === 'still here', 'B13 delivery still works after an aborted request');
+      console.log('  ✓ B13 aborted mid-body POST → server survives and keeps delivering');
     }
 
     console.log(`\nAll ${passed} assertions passed.`);

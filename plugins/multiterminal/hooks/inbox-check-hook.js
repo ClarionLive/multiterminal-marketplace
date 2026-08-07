@@ -57,9 +57,15 @@ const path = require('path');
 // server/ with its own package.json and node_modules, while this is CJS under
 // hooks/. If you change the semantics here, change them there too.
 
+// These key lists are IDENTICAL to server/multiterminal-channel.mjs, in the
+// same order, on purpose. An earlier revision let each file lead with its own
+// native shape (`Content` here, `message` there) which silently INVERTED
+// precedence: a payload carrying both keys rendered one thing here and the
+// other on the channel, and each file's tests pinned its own answer, so the
+// suites locked in the disagreement. One order, both files, no exceptions.
 const EMPTY_BODY_MARKER = '(empty message — the sender delivered a blank body)';
-const SENDER_KEYS = ['Sender', 'sender', 'From', 'from'];
-const CONTENT_KEYS = ['Content', 'content', 'Message', 'message'];
+const SENDER_KEYS = ['from', 'sender', 'From', 'Sender'];
+const CONTENT_KEYS = ['message', 'content', 'Message', 'Content'];
 
 /** Bounded, single-line preview of an unrecognised entry, for diagnostics. */
 function previewEntry(value, max = 200) {
@@ -83,21 +89,43 @@ function previewEntry(value, max = 200) {
  */
 function firstNonEmpty(obj, keys) {
   let sawKey = false;
+  if (obj === null || typeof obj !== 'object') return { text: null, sawKey };
   for (const key of keys) {
     if (!(key in obj)) continue;
     sawKey = true;
     const value = obj[key];
     if (value === null || value === undefined) continue;
-    const text = String(value);
+    const text = coerceField(value);
     if (text.trim() !== '') return { text, sawKey: true };
   }
   return { text: null, sawKey };
 }
 
+/**
+ * Coerce one field value to display text, without ever inventing content.
+ *
+ * `String(value)` alone turns an object body into the literal "[object Object]",
+ * destroying the content silently and unlabelled — the exact class of loss this
+ * change exists to close. It can also THROW (`{toString:'x'}` →
+ * "Cannot convert object to primitive value"), which would break this hook's
+ * documented "any error → exit 0 silently" contract. Structured values are
+ * JSON-rendered instead, and coercion never escapes.
+ */
+function coerceField(value) {
+  if (typeof value === 'object') { // arrays included; null is filtered by the caller
+    return previewEntry(value);
+  }
+  try {
+    return String(value);
+  } catch (e) {
+    return '(unrenderable value)';
+  }
+}
+
 /** Render one inbox entry as exactly one line. Never returns null. */
 function formatMessage(msg) {
   if (msg === null || typeof msg !== 'object' || Array.isArray(msg)) {
-    return `[unknown]: (unreadable inbox entry: ${previewEntry(msg)})`;
+    return `[unknown sender]: (unreadable inbox entry: ${previewEntry(msg)})`;
   }
 
   const sender = firstNonEmpty(msg, SENDER_KEYS).text || 'unknown sender';
@@ -157,9 +185,18 @@ function run(hookData, opts = {}) {
 
   // Format messages. One line per entry, unconditionally — see the
   // formatMessage() block above for why nothing is filtered out any more.
+  //
+  // The try/catch is PER ENTRY, not around the loop. Wrapping the whole loop
+  // would let one hostile entry swallow the entire batch and return silently —
+  // reintroducing exactly the total-loss bug this function was rewritten to
+  // kill. Contain the blast radius to the one entry that misbehaved.
   const lines = ['## Incoming Messages'];
   for (const msg of messages) {
-    lines.push(formatMessage(msg));
+    try {
+      lines.push(formatMessage(msg));
+    } catch (e) {
+      lines.push(`[unknown sender]: (unrenderable inbox entry: ${e.message})`);
+    }
   }
 
   if (lines.length === 1) {

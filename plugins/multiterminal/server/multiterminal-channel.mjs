@@ -358,10 +358,73 @@ function isDuplicateMessage(id) {
 
 const EMPTY_BODY_MARKER = '(empty message — the sender delivered a blank body)';
 
+// The key lists are IDENTICAL to hooks/inbox-check-hook.js, in the same order,
+// on purpose. An earlier revision let each file lead with its own native shape
+// (`message` here, `Content` there) which silently inverted precedence: a
+// payload carrying BOTH keys rendered one thing on the channel and the other in
+// the hook, and each file's tests pinned its own answer, so the suites locked in
+// the disagreement. One order, both files, no exceptions.
+const SENDER_KEYS = ['from', 'sender', 'From', 'Sender'];
+const CONTENT_KEYS = ['message', 'content', 'Message', 'Content'];
+
 /** Bounded, single-line preview of an unrecognised payload, for diagnostics. */
 function previewPayload(raw, max = 300) {
   const text = String(raw ?? '').replace(/\s+/g, ' ').trim();
   return text.length > max ? `${text.slice(0, max)}…` : text;
+}
+
+/**
+ * Coerce one field value to display text, without ever inventing content.
+ *
+ * `String(value)` alone turns an object body into the literal "[object Object]",
+ * which destroys the content silently and unlabelled — the exact class of loss
+ * this whole change exists to close. Structured values are JSON-rendered
+ * instead, so `{"message":{"text":"real words"}}` stays readable.
+ */
+function coerceField(value) {
+  if (typeof value === 'object') { // arrays included; null is filtered by the caller
+    let json;
+    try {
+      json = JSON.stringify(value);
+    } catch {
+      json = null; // circular
+    }
+    return previewPayload(json ?? '(unrenderable value)');
+  }
+  try {
+    return String(value);
+  } catch {
+    // Only reachable for exotic values a JSON payload cannot produce (Symbol,
+    // a throwing Symbol.toPrimitive). Never let coercion kill the delivery.
+    return '(unrenderable value)';
+  }
+}
+
+/** First non-empty value among `keys`, or null. `sawKey` reports "present but empty". */
+function firstNonEmpty(obj, keys) {
+  let sawKey = false;
+  if (obj === null || typeof obj !== 'object') return { text: null, sawKey };
+  for (const key of keys) {
+    if (!(key in obj)) continue; // absent — try the next shape
+    sawKey = true;
+    const value = obj[key];
+    if (value === null || value === undefined) continue;
+    const text = coerceField(value);
+    if (text.trim() !== '') return { text, sawKey: true }; // first non-empty wins
+  }
+  return { text: null, sawKey };
+}
+
+/**
+ * Resolve the sender name of an inbound payload.
+ *
+ * Reads the same SENDER_KEYS the inbox hook does. Before this, the channel read
+ * only `msg.from`, so an inbox-shaped `{Sender:'Bob', Content:'x'}` rendered its
+ * BODY correctly but attributed it to "unknown" — half-understanding a payload
+ * is its own defect.
+ */
+function resolveFrom(msg) {
+  return firstNonEmpty(msg, SENDER_KEYS).text || 'unknown';
 }
 
 /**
@@ -381,23 +444,11 @@ function resolveContent(msg, rawBody) {
     return msg.trim() === '' ? EMPTY_BODY_MARKER : msg;
   }
 
-  // `Content` is accepted too: it is the documented inbox-file shape
-  // ([{Id, Sender, Content, Timestamp}]), so honouring it keeps a
-  // correctly-shaped-but-unexpected payload out of the unrecognised branch.
-  let sawBodyKey = false;
-  if (msg !== null && typeof msg === 'object') {
-    for (const key of ['message', 'content', 'Content']) {
-      if (!(key in msg)) continue; // absent — try the next shape
-      sawBodyKey = true;
-      const value = msg[key];
-      if (value === null || value === undefined) continue;
-      const text = String(value);
-      if (text.trim() !== '') return text; // first non-empty wins
-    }
-  }
+  const body = firstNonEmpty(msg, CONTENT_KEYS);
+  if (body.text !== null) return body.text;
 
   // A body key was there, it was just empty. Say exactly that.
-  if (sawBodyKey) return EMPTY_BODY_MARKER;
+  if (body.sawKey) return EMPTY_BODY_MARKER;
 
   // No body key at all — an unrecognised shape. Show it LABELLED as a payload,
   // never as if the sender had typed it, and never unbounded.
@@ -417,14 +468,27 @@ const httpServer = http.createServer(async (req, res) => {
   // Receive a message (POST /message)
   if (req.method === 'POST' && req.url === '/message') {
     let body = '';
-    for await (const chunk of req) {
-      body += chunk;
-      if (body.length > 1_000_000) { res.writeHead(413); res.end('Payload too large'); return; }
+    // The read MUST be guarded. If the client disconnects mid-body, Node's
+    // abortIncoming rejects this async iterator; because the request handler is
+    // itself async, that becomes an unhandled rejection and THE WHOLE PROCESS
+    // EXITS(1) — taking this agent's channel delivery and its reply/send MCP
+    // tools with it until the session restarts. One truncated POST to localhost
+    // was enough. (A complete-body-then-abort, e.g. MT's 5s HttpClient timeout,
+    // is harmless — only a truncated body triggers it.)
+    try {
+      for await (const chunk of req) {
+        body += chunk;
+        if (body.length > 1_000_000) { res.writeHead(413); res.end('Payload too large'); return; }
+      }
+    } catch (err) {
+      log(`Aborted request on ${req.url}: ${err.message}`);
+      res.destroy();
+      return;
     }
 
     try {
       const msg = JSON.parse(body);
-      const from = msg.from || 'unknown';
+      const from = resolveFrom(msg);
       const content = resolveContent(msg, body);
       const priority = msg.priority || 'normal';
       const messageType = msg.messageType || 'direct';
@@ -514,14 +578,22 @@ const httpServer = http.createServer(async (req, res) => {
   // Broadcast (POST /broadcast) — same format, just a different endpoint for clarity
   if (req.method === 'POST' && req.url === '/broadcast') {
     let body = '';
-    for await (const chunk of req) {
-      body += chunk;
-      if (body.length > 1_000_000) { res.writeHead(413); res.end('Payload too large'); return; }
+    // Guarded for the same reason as POST /message — see the note there. An
+    // aborted body-read here killed the process just as dead.
+    try {
+      for await (const chunk of req) {
+        body += chunk;
+        if (body.length > 1_000_000) { res.writeHead(413); res.end('Payload too large'); return; }
+      }
+    } catch (err) {
+      log(`Aborted request on ${req.url}: ${err.message}`);
+      res.destroy();
+      return;
     }
 
     try {
       const msg = JSON.parse(body);
-      const from = msg.from || 'unknown';
+      const from = resolveFrom(msg);
       // Same defect as POST /message had — a broadcast with an empty body
       // rendered the raw envelope too. Recipient VERIFICATION is what /broadcast
       // deliberately skips (a broadcast has no meaningful `to`); body rendering

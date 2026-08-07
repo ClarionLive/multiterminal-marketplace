@@ -156,5 +156,53 @@ function chk(cond, msg) { assert.ok(cond, msg); d2++; }
   chk(r.stdout === undefined, 'D11 an empty inbox array is still silent');
 }
 
+// ── Pipeline Run 1 findings (adversary HIGH + debugger MEDIUM/LOW) ───────────
+
+// D12: key precedence is now IDENTICAL to server/multiterminal-channel.mjs.
+// Previously the hook led with `Content` and the channel with `message`, so a
+// payload carrying both rendered DIFFERENTLY on each path — and each file's
+// tests pinned its own answer, locking in the disagreement. This case and the
+// channel suite's B12 must always agree; if someone re-inverts one list, they
+// disagree and the drift is caught.
+{
+  chk(formatMessage({ sender: 'Bob', message: 'from message', Content: 'from Content' }) === '[Bob]: from message',
+    'D12 body precedence: message > Content (same order as the channel)');
+  chk(formatMessage({ from: 'Bob', Sender: 'NotBob', content: 'x' }) === '[Bob]: x',
+    'D12 sender precedence: from > Sender (same order as the channel)');
+}
+
+// D13: an object-valued body must not become "[object Object]" — that silently
+// destroys content with no diagnostic, which is the very loss class this file
+// was rewritten to close. Three pipeline gates flagged it independently.
+{
+  const line = formatMessage({ sender: 'Bob', content: { type: 'text', text: 'real words' } });
+  chk(!line.includes('[object Object]'), `D13 structured body must not stringify to [object Object], got ${JSON.stringify(line)}`);
+  chk(line.includes('real words'), `D13 structured body must stay readable, got ${JSON.stringify(line)}`);
+}
+
+// D14: coercion must never throw. `String({toString:'x'})` raises
+// "Cannot convert object to primitive value"; before the fix that escaped run()
+// and the CLI shim, so the hook exited non-zero with a stack trace — breaking
+// its documented "any error -> exit 0 silently (never block Claude)" contract.
+{
+  const hostile = JSON.stringify([
+    { sender: 'Bob', content: 'first' },
+    { sender: 'Diana', content: { toString: 'x' } },
+    { sender: 'Grace', content: 'third' },
+  ]);
+  let r;
+  try {
+    r = run({}, { hookType: 'PostToolUse', name: 'Tester', inboxPath: 'mem', fs: stubFs(hostile) });
+  } catch (e) {
+    r = null;
+  }
+  chk(r !== null, 'D14 a hostile entry must not make run() throw');
+  // And the blast radius is ONE entry — a whole-loop try/catch would have
+  // swallowed the batch and returned silence, reintroducing the total-loss bug.
+  chk(r && r.stdout.includes('[Bob]: first'), 'D14 siblings before the hostile entry still render');
+  chk(r && r.stdout.includes('[Grace]: third'), 'D14 siblings after the hostile entry still render');
+  chk(r && r.stdout.split('\n').length === 4, `D14 header + 3 entries = 4 lines, got ${r && r.stdout.split('\n').length}`);
+}
+
 console.log(`inbox-check run() unit: PASS (6 assertions)`);
 console.log(`inbox-check defect-2 no-silent-drop: PASS (${d2} assertions)`);
