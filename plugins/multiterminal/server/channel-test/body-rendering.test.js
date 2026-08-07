@@ -320,6 +320,56 @@ async function main() {
       console.log('  ✓ B13 aborted mid-body POST → server survives and keeps delivering');
     }
 
+    // ── B14: unrecognised payloads disclose SHAPE, not VALUES ─────────────────
+    // The earlier revision echoed the whole raw request body, piping every field
+    // of a payload we had by definition failed to understand into the agent's
+    // context. Key names answer the diagnostic question without the values.
+    {
+      const { params } = await deliver('/message', { from: 'Bob', routingToken: 'SUPERSECRET', id: 'b14', to: AGENT });
+      ok(params?.content.includes('routingToken'), `B14 key names are the diagnostic, got ${JSON.stringify(params?.content)}`);
+      ok(!params.content.includes('SUPERSECRET'), `B14 values must NOT be disclosed, got ${JSON.stringify(params.content)}`);
+      console.log('  ✓ B14 unrecognised payload → key names only, no values leaked');
+    }
+
+    // ── B15: a request that never injected must not burn its id ───────────────
+    //
+    // ⚠️ COVERAGE HONESTY — READ BEFORE TRUSTING THIS CASE. This does NOT
+    // falsify the mark-after-delivery fix. The recipient check returns 409
+    // BEFORE the dedup check in both the old and the new code, so a refused
+    // message never burned its id either way and this case passes against both.
+    // It is a genuine invariant worth pinning, but it is NOT the regression test
+    // for that fix.
+    //
+    // The actual defect needs mcp.notification() to THROW after the id was
+    // marked: the handler then answered 400 (MT writes its belt and leaves the
+    // row pending — correct), but the Tier-3 RETRY hit the already-marked id and
+    // got 200 `duplicate_ignored`, so MT recorded DELIVERED for a message the
+    // channel never injected. Reproducing that from outside the process would
+    // need an injectable/failing transport seam, which this module does not
+    // expose — the notification goes straight to the real MCP server object.
+    // Tracked as a coverage gap in ticket 428863ee; Codex raised the same point.
+    {
+      const refused = await post(port, '/message', { from: 'Bob', message: 'for Diana', id: 'b15-shared', to: 'Diana' });
+      ok(refused.status === 409, `B15 setup expected 409, got ${refused.status}`);
+
+      const { res, params } = await deliver('/message', { from: 'Bob', message: 'now correctly addressed', id: 'b15-shared', to: AGENT });
+      ok(res.json?.status === 'delivered', `B15 an id burned by a NON-delivery must still deliver, got ${JSON.stringify(res.json)}`);
+      ok(params?.content === 'now correctly addressed', 'B15 the retry actually injected, not just 200-ed');
+      console.log('  ✓ B15 id not burned by a 409-refused request (NOT a test of mark-after-delivery — see comment)');
+    }
+
+    // ── B16: NEGATIVE FIXTURE — real duplicates are still suppressed ──────────
+    // The B15 fix must not disable dedup; that would reintroduce the
+    // double-injection the belt-and-retry design needs dedup to prevent.
+    {
+      const first = await deliver('/message', { from: 'Bob', message: 'once only', id: 'b16', to: AGENT });
+      ok(first.res.json?.status === 'delivered', 'B16 first send delivered');
+      const second = await deliver('/message', { from: 'Bob', message: 'once only', id: 'b16', to: AGENT });
+      ok(second.res.json?.status === 'duplicate_ignored', `B16 replay after SUCCESS must still dedup, got ${JSON.stringify(second.res.json)}`);
+      ok(second.injected === false, 'B16 the duplicate was not injected a second time');
+      console.log('  ✓ B16 replay after a successful delivery → still deduped (dedup not disabled)');
+    }
+
     console.log(`\nAll ${passed} assertions passed.`);
   } finally {
     child.kill();
