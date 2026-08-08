@@ -264,6 +264,237 @@ async function sendViaApi(to, message, priority) {
   return `Message sent to ${to}`;
 }
 
+// ─── Recipient verification + replay dedup (GH#7, ticket 6b093a22) ───────────
+//
+// This server used to accept ANY POST to its port and inject it into this
+// agent's session. MultiTerminal delivers by POSTing to the recipient's LAST
+// RECORDED port and treats any 2xx as proof of delivery, so a stale or reused
+// port silently routed one agent's messages into another agent's session — and
+// the broker marked them delivered. That is the "Diana loses everything while
+// Eve receives fine" signature in GH#7, and it cannot be fixed broker-side:
+// only the process that owns the port knows who it actually is.
+//
+// MT ticket 405273fd added `id` and `to` to the channel payload specifically so
+// this check could exist. This is that check.
+
+const SEEN_MESSAGE_TTL_MS = 10 * 60 * 1000;
+const SEEN_MESSAGE_MAX = 500;
+
+/** messageId -> receipt timestamp. Map iteration is insertion-ordered, which pruning relies on. */
+const seenMessageIds = new Map();
+
+/**
+ * True when a payload is addressed to this agent.
+ *
+ * A payload with NO `to` is ACCEPTED. That is deliberate and load-bearing:
+ * older MT builds (pre-405273fd) omit the field entirely, and rejecting those
+ * would silently break messaging for every agent running against an older
+ * backend. We reject only on positive evidence of misdelivery — `to` present
+ * AND naming somebody else.
+ */
+function isAddressedToMe(to) {
+  if (to === undefined || to === null || to === '') return true;
+  return String(to).toLowerCase() === AGENT_NAME.toLowerCase();
+}
+
+/**
+ * True when this message id has already been injected recently.
+ *
+ * MT keeps a failed delivery retryable while ALSO writing an inbox-file copy,
+ * so a recovered channel can legitimately receive a message the agent already
+ * saw. Deduping here is what makes that belt-and-retry design safe.
+ * Payloads without an id are never deduped (nothing to key on).
+ *
+ * CHECKING AND MARKING ARE SEPARATE ON PURPOSE — see markMessageSeen().
+ */
+function hasSeenMessage(id) {
+  if (id === undefined || id === null || id === '') return false;
+
+  const cutoff = Date.now() - SEEN_MESSAGE_TTL_MS;
+  for (const [seenId, at] of seenMessageIds) {
+    if (at >= cutoff) break; // insertion-ordered: first fresh entry ends the sweep
+    seenMessageIds.delete(seenId);
+  }
+
+  return seenMessageIds.has(String(id));
+}
+
+/**
+ * Record an id as delivered. Call this ONLY after the message has actually
+ * reached the agent — never before.
+ *
+ * An earlier revision marked the id inside the duplicate CHECK, i.e. before the
+ * awaited mcp.notification(). If that notification then threw, the handler
+ * answered 400, MT wrote its inbox belt and left the row pending (correct), but
+ * the Tier-3 RETRY hit the already-marked id and got back 200
+ * `duplicate_ignored` — so MT marked the message DELIVERED even though the
+ * channel had never injected it. Not a total loss (the belt still surfaces it
+ * on the recipient's next hook run), but it silently downgrades a channel
+ * delivery to the file path that "may not surface until the next hook fires,
+ * possibly never for an idle terminal" — while telling the broker it succeeded.
+ * That is precisely the delivered-but-wasn't accounting bug GH#7 / ticket
+ * 405273fd exists to kill, reappearing through a side door.
+ *
+ * Marking after the fact means a failed injection stays retryable, and the
+ * retry actually re-injects.
+ */
+function markMessageSeen(id) {
+  if (id === undefined || id === null || id === '') return;
+  seenMessageIds.set(String(id), Date.now());
+  while (seenMessageIds.size > SEEN_MESSAGE_MAX) {
+    seenMessageIds.delete(seenMessageIds.keys().next().value);
+  }
+}
+
+// ─── Message body resolution (GH#7, ticket 6b093a22 defect 1) ────────────────
+//
+// The old chain was:
+//
+//     const content = msg.message || msg.content || body;
+//
+// which reads as defensive but conflates three very different situations,
+// because an EMPTY STRING is falsy:
+//
+//   key absent            -> fall through to the next shape.   CORRECT, and
+//                            load-bearing: the inbox-file shape uses `Content`
+//                            while the channel POST uses `message`.
+//   key present but EMPTY -> ALSO fell through — past `content`, past
+//                            everything, all the way to `body`, the raw request
+//                            text. The agent was then shown
+//                            `{"from":"Bob","message":"","id":42,...}` as if
+//                            that JSON were the message Bob had typed.
+//                            Verified live on message 6889.
+//   no body key at all    -> same raw-envelope dump.
+//
+// Rendering an envelope as content is worse than rendering nothing: it is
+// indistinguishable from a sender who genuinely typed JSON, so the reader
+// cannot tell a delivery bug from a weird colleague. Each case is now named
+// explicitly and the envelope is NEVER passed off as somebody's words.
+//
+// Kept deliberately in sync with hooks/inbox-check-hook.js, which had the
+// mirror-image defect (it dropped these payloads silently instead). The logic
+// is duplicated rather than shared because that hook is CJS under hooks/ while
+// this is an ESM module under server/ with its own package.json and
+// node_modules — a shared import across that boundary costs more than 20 lines
+// of duplication. If you change the semantics here, change them there too.
+
+const EMPTY_BODY_MARKER = '(empty message — the sender delivered a blank body)';
+
+// The key lists are IDENTICAL to hooks/inbox-check-hook.js, in the same order,
+// on purpose. An earlier revision let each file lead with its own native shape
+// (`message` here, `Content` there) which silently inverted precedence: a
+// payload carrying BOTH keys rendered one thing on the channel and the other in
+// the hook, and each file's tests pinned its own answer, so the suites locked in
+// the disagreement. One order, both files, no exceptions.
+const SENDER_KEYS = ['from', 'sender', 'From', 'Sender'];
+const CONTENT_KEYS = ['message', 'content', 'Message', 'Content'];
+
+/** Bounded, single-line preview of a VALUE we intend to render, for diagnostics. */
+function previewPayload(raw, max = 300) {
+  const text = String(raw ?? '').replace(/\s+/g, ' ').trim();
+  return text.length > max ? `${text.slice(0, max)}…` : text;
+}
+
+/**
+ * Describe an unrecognised payload by its KEY NAMES ONLY — never its values.
+ *
+ * An earlier revision echoed the whole raw request body here. That told a
+ * reader what shape had arrived, but it also piped every field of an
+ * unrecognised envelope — routing data, ids, timestamps, and any field a future
+ * writer adds — straight into the agent's context, for a payload we had by
+ * definition failed to understand. Key names answer the actual diagnostic
+ * question ("which field did the sender use?") and carry no values.
+ */
+function describeShape(msg) {
+  if (msg === null) return 'null';
+  if (Array.isArray(msg)) return `array[${msg.length}]`;
+  if (typeof msg !== 'object') return typeof msg;
+  const keys = Object.keys(msg);
+  if (keys.length === 0) return 'object with no keys';
+  const shown = keys.slice(0, 20).map(k => previewPayload(k, 40));
+  return `keys=${shown.join(',')}${keys.length > shown.length ? ',…' : ''}`;
+}
+
+/**
+ * Coerce one field value to display text, without ever inventing content.
+ *
+ * `String(value)` alone turns an object body into the literal "[object Object]",
+ * which destroys the content silently and unlabelled — the exact class of loss
+ * this whole change exists to close. Structured values are JSON-rendered
+ * instead, so `{"message":{"text":"real words"}}` stays readable.
+ */
+function coerceField(value) {
+  if (typeof value === 'object') { // arrays included; null is filtered by the caller
+    let json;
+    try {
+      json = JSON.stringify(value);
+    } catch {
+      json = null; // circular
+    }
+    return previewPayload(json ?? '(unrenderable value)');
+  }
+  try {
+    return String(value);
+  } catch {
+    // Only reachable for exotic values a JSON payload cannot produce (Symbol,
+    // a throwing Symbol.toPrimitive). Never let coercion kill the delivery.
+    return '(unrenderable value)';
+  }
+}
+
+/** First non-empty value among `keys`, or null. `sawKey` reports "present but empty". */
+function firstNonEmpty(obj, keys) {
+  let sawKey = false;
+  if (obj === null || typeof obj !== 'object') return { text: null, sawKey };
+  for (const key of keys) {
+    if (!(key in obj)) continue; // absent — try the next shape
+    sawKey = true;
+    const value = obj[key];
+    if (value === null || value === undefined) continue;
+    const text = coerceField(value);
+    if (text.trim() !== '') return { text, sawKey: true }; // first non-empty wins
+  }
+  return { text: null, sawKey };
+}
+
+/**
+ * Resolve the sender name of an inbound payload.
+ *
+ * Reads the same SENDER_KEYS the inbox hook does. Before this, the channel read
+ * only `msg.from`, so an inbox-shaped `{Sender:'Bob', Content:'x'}` rendered its
+ * BODY correctly but attributed it to "unknown" — half-understanding a payload
+ * is its own defect.
+ */
+function resolveFrom(msg) {
+  return firstNonEmpty(msg, SENDER_KEYS).text || 'unknown';
+}
+
+/**
+ * Resolve the human-readable body of an inbound payload.
+ *
+ * Returns a string that is ALWAYS safe to `.substring()` and to inject as
+ * channel content. When the payload carries nothing renderable, the string is
+ * an explicit, self-describing marker rather than the envelope.
+ *
+ * @param {unknown} msg the parsed payload
+ */
+function resolveContent(msg) {
+  // A bare JSON string payload IS the message.
+  if (typeof msg === 'string') {
+    return msg.trim() === '' ? EMPTY_BODY_MARKER : msg;
+  }
+
+  const body = firstNonEmpty(msg, CONTENT_KEYS);
+  if (body.text !== null) return body.text;
+
+  // A body key was there, it was just empty. Say exactly that.
+  if (body.sawKey) return EMPTY_BODY_MARKER;
+
+  // No body key at all — an unrecognised shape. Report its SHAPE, labelled,
+  // never as if the sender had typed it, and never the values.
+  return `(unrecognised message payload — no "message" or "content" field: ${describeShape(msg)})`;
+}
+
 // ─── HTTP Server: receive messages from other agents/broker ──────────────────
 
 const httpServer = http.createServer(async (req, res) => {
@@ -277,17 +508,56 @@ const httpServer = http.createServer(async (req, res) => {
   // Receive a message (POST /message)
   if (req.method === 'POST' && req.url === '/message') {
     let body = '';
-    for await (const chunk of req) {
-      body += chunk;
-      if (body.length > 1_000_000) { res.writeHead(413); res.end('Payload too large'); return; }
+    // The read MUST be guarded. If the client disconnects mid-body, Node's
+    // abortIncoming rejects this async iterator; because the request handler is
+    // itself async, that becomes an unhandled rejection and THE WHOLE PROCESS
+    // EXITS(1) — taking this agent's channel delivery and its reply/send MCP
+    // tools with it until the session restarts. One truncated POST to localhost
+    // was enough. (A complete-body-then-abort, e.g. MT's 5s HttpClient timeout,
+    // is harmless — only a truncated body triggers it.)
+    try {
+      for await (const chunk of req) {
+        body += chunk;
+        if (body.length > 1_000_000) { res.writeHead(413); res.end('Payload too large'); return; }
+      }
+    } catch (err) {
+      log(`Aborted request on ${req.url}: ${err.message}`);
+      res.destroy();
+      return;
     }
 
     try {
       const msg = JSON.parse(body);
-      const from = msg.from || 'unknown';
-      const content = msg.message || msg.content || body;
+      const from = resolveFrom(msg);
+      const content = resolveContent(msg);
       const priority = msg.priority || 'normal';
       const messageType = msg.messageType || 'direct';
+
+      // Wrong recipient — someone else's message arrived on our port (stale/reused
+      // port). Refuse it. 409 is deliberately NON-2xx: MT treats any 2xx as proof of
+      // delivery, so answering 200 here is exactly how these messages used to be
+      // marked delivered and lost. A non-2xx leaves the queue row retryable, and the
+      // message reaches its real recipient once the port record corrects itself.
+      if (!isAddressedToMe(msg.to)) {
+        log(`REFUSED message ${msg.id ?? '?'} from ${from}: addressed to "${msg.to}", but this port belongs to ${AGENT_NAME}`);
+        res.writeHead(409, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({
+          status: 'wrong_recipient',
+          agent: AGENT_NAME,
+          addressedTo: msg.to,
+        }));
+        return;
+      }
+
+      // Already injected — a Tier-3 retry after the inbox-file belt already ran, or
+      // a double-send. 2xx (not 409): the message genuinely reached this agent, just
+      // earlier, so MT should mark it delivered rather than retry it forever.
+      if (hasSeenMessage(msg.id)) {
+        log(`Ignored duplicate message ${msg.id} from ${from} (already delivered)`);
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ status: 'duplicate_ignored', agent: AGENT_NAME }));
+        return;
+      }
 
       // Check for permission verdict reply (e.g. "yes abcde", "no abcde", or "always abcde")
       const verdict = PERMISSION_REPLY_RE.exec(content);
@@ -314,6 +584,7 @@ const httpServer = http.createServer(async (req, res) => {
           },
         });
 
+        markMessageSeen(msg.id); // handled successfully — a replay is a genuine duplicate
         log(`Permission verdict from ${from}: ${word} ${reqId}`);
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ status: 'verdict_recorded', agent: AGENT_NAME }));
@@ -334,6 +605,11 @@ const httpServer = http.createServer(async (req, res) => {
         },
       });
 
+      // ONLY NOW is the id recorded — the await above has actually injected it.
+      // Marking earlier turned a failed injection into a permanent
+      // `duplicate_ignored` 200 on the retry, i.e. delivered-but-wasn't.
+      markMessageSeen(msg.id);
+
       log(`Received message from ${from}: ${content.substring(0, 80)}...`);
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ status: 'delivered', agent: AGENT_NAME }));
@@ -348,15 +624,27 @@ const httpServer = http.createServer(async (req, res) => {
   // Broadcast (POST /broadcast) — same format, just a different endpoint for clarity
   if (req.method === 'POST' && req.url === '/broadcast') {
     let body = '';
-    for await (const chunk of req) {
-      body += chunk;
-      if (body.length > 1_000_000) { res.writeHead(413); res.end('Payload too large'); return; }
+    // Guarded for the same reason as POST /message — see the note there. An
+    // aborted body-read here killed the process just as dead.
+    try {
+      for await (const chunk of req) {
+        body += chunk;
+        if (body.length > 1_000_000) { res.writeHead(413); res.end('Payload too large'); return; }
+      }
+    } catch (err) {
+      log(`Aborted request on ${req.url}: ${err.message}`);
+      res.destroy();
+      return;
     }
 
     try {
       const msg = JSON.parse(body);
-      const from = msg.from || 'unknown';
-      const content = msg.message || msg.content || body;
+      const from = resolveFrom(msg);
+      // Same defect as POST /message had — a broadcast with an empty body
+      // rendered the raw envelope too. Recipient VERIFICATION is what /broadcast
+      // deliberately skips (a broadcast has no meaningful `to`); body rendering
+      // is not exempt.
+      const content = resolveContent(msg);
 
       await mcp.notification({
         method: 'notifications/claude/channel',
