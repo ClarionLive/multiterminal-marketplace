@@ -190,6 +190,17 @@
               "sync"
             ],
             "timeout": 8
+          },
+          {
+            "type": "command",
+            "command": "node",
+            "args": [
+              "${CLAUDE_PLUGIN_ROOT}/hooks/dispatch-hook.js",
+              "Stop",
+              "async"
+            ],
+            "timeout": 10,
+            "async": true
           }
         ]
       }

@@ -91,6 +91,12 @@ const TABLE = {
   Stop: [
     { name: 'session-save-hook', mod: './session-save-hook.js', head: 'sync' },
     { name: 'inbox-check-hook', mod: './inbox-check-hook.js', head: 'sync' },
+    // TURN_END for MultiTerminal's attention rail (task edcdcdd5). The leaf gained its Stop
+    // case in 95565f2 and was unit-tested there -- but was never ROUTED: this table had no
+    // activity entry for Stop and hooks.json had no `Stop async` dispatch, so no TURN_END row
+    // was ever written and a prompt dismissed with Escape pulsed forever. Found by the
+    // pipeline debugger against the live table (0 TURN_END rows in 153k).
+    { name: 'activity-hook', mod: './activity-hook.js', head: 'async' },
   ],
   SubagentStart: [
     // subagent-office self-gates on hook_event_name === 'SubagentStart'.

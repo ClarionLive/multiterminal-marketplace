@@ -109,7 +109,8 @@ async function main() {
       }
     }
 
-    // Census: 21 node leaves + 1 non-node (SessionStart powershell echo) = 22.
+    // Census: 22 node leaves + 1 non-node (SessionStart powershell echo) = 23.
+    // (+1 in edcdcdd5: `Stop async` dispatch, so the activity leaf can write TURN_END.)
     // FULLY-COLLAPSED SHAPE (collapse commit 42c91001; rewritten acf2c16d, PM-ratified).
     //   hooks.json no longer wires individual hooks — high-frequency events route
     //   through `dispatch-hook.js <Event> <sync|async>` (matcher-BLIND); the dispatcher's
@@ -121,8 +122,8 @@ async function main() {
     //   (event,head) the TABLE routes has a matching dispatch-hook.js entry, and every
     //   dispatch entry is backed by TABLE leaves. Aggregation contract = T1–T5; matcher
     //   GATING = T7; this census reflects dispatch-hook.js routing, not per-hook wiring.
-    ok(total === 22, `T6 hooks.json total leaf census == 22 (got ${total})`);
-    ok(node === 21, `T6 node leaves == 21 (got ${node})`);
+    ok(total === 23, `T6 hooks.json total leaf census == 23 (got ${total})`);
+    ok(node === 22, `T6 node leaves == 22 (got ${node})`);
     ok(nonNode.length === 1 && nonNode[0].command === 'powershell',
       'T6 exactly 1 non-node leaf (SessionStart powershell echo) — inherently standalone, never dispatched');
 
