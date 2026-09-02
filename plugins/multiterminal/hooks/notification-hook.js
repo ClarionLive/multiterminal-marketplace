@@ -67,6 +67,50 @@ function callApi(apiPath, method, body) {
 // ASYNC class (async:true → async dispatch head under B2). POSTs Notification
 // events to MT for storage/toast/phone-push; callApi is injectable so tests don't
 // hit :5050 (ticket 42c91001). No stdout; always returns {exitCode: 0}.
+/**
+ * Reads `<dir>/.claude/project.json` and returns its `name`, or '' if there isn't one.
+ * Never throws: the project name is optional metadata and must not take a notification down.
+ */
+function readProjectName(dir) {
+  try {
+    const p = path.join(dir, '.claude', 'project.json');
+    if (!fs.existsSync(p)) return '';
+    const proj = JSON.parse(fs.readFileSync(p, 'utf8'));
+    return (proj && typeof proj.name === 'string') ? proj.name : '';
+  } catch {
+    return '';   // unreadable or malformed — indistinguishable from absent, and equally optional
+  }
+}
+
+/**
+ * Resolves the MultiTerminal project name for a working directory.
+ *
+ * Tries the exact cwd first, then — if that missed and the cwd is inside an MT task
+ * worktree — the repo root the worktree belongs to.
+ *
+ * MT's worktrees live at `<repo>/.claude/worktrees/<taskId>` and carry no project.json
+ * of their own, so the previous single-join form returned '' for EVERY agent working in
+ * a worktree, which is now the normal way agents work. The card's project line was
+ * therefore blank almost always. (MultiTerminal task 42052f0c.)
+ *
+ * The suffix-strip deliberately mirrors `mcp/index.js`'s own worktree handling
+ * (`target.replace(/[\\/]\.claude[\\/]worktrees[\\/].*$/, "")`) rather than walking up
+ * the tree looking for any ancestor's project.json. A generic walk would happily adopt
+ * an UNRELATED grandparent's project for a directory that simply has no project of its
+ * own — silently mislabelling the card instead of leaving it honestly blank.
+ */
+function resolveProjectName(cwd) {
+  if (!cwd) return '';
+
+  const exact = readProjectName(cwd);
+  if (exact) return exact;
+
+  const repoRoot = String(cwd).replace(/[\\/]\.claude[\\/]worktrees[\\/].*$/, '');
+  if (repoRoot && repoRoot !== cwd) return readProjectName(repoRoot);
+
+  return '';
+}
+
 async function run(hookData, deps = {}) {
   const _callApi = deps.callApi || callApi;
   const timestamp = new Date().toISOString();
@@ -99,15 +143,7 @@ async function run(hookData, deps = {}) {
   const message = messageMap[rawType] || data.message || '';
   const cwd = data.cwd || process.env.CLAUDE_PROJECT_DIR || '';
 
-  // Try to read project name from .claude/project.json in the working directory
-  let projectName = '';
-  try {
-    const projectJsonPath = path.join(cwd, '.claude', 'project.json');
-    if (fs.existsSync(projectJsonPath)) {
-      const proj = JSON.parse(fs.readFileSync(projectJsonPath, 'utf8'));
-      projectName = proj.name || '';
-    }
-  } catch { /* ignore — project name is optional */ }
+  const projectName = resolveProjectName(cwd);
 
   // keys= is deliberately logged: it is the cheapest way to settle whether Claude Code supplies a
   // tool_use_id on a Notification payload at all (MultiTerminal task 2289bb8a item 0 left that open
@@ -141,7 +177,7 @@ async function run(hookData, deps = {}) {
   return { exitCode: 0 };
 }
 
-module.exports = { run };
+module.exports = { run, resolveProjectName, readProjectName };
 
 // ── CLI shim (standalone invocation — preserves exact prior behavior) ─
 if (require.main === module) {
