@@ -12,7 +12,7 @@ const fs = require('fs');
 const path = require('path');
 
 // Database path
-const DB_PATH = path.join(process.env.APPDATA || '', 'multiterminal', 'tasks.db');
+const DB_PATH = path.join(process.env.APPDATA || '', 'multiterminal', 'multiterminal.db');
 
 // better-sqlite3 resolution is centralized in _sqlite.js (issue #7) — no hardcoded paths.
 const { requireBetterSqlite3 } = require('./_sqlite');

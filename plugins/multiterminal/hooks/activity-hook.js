@@ -13,7 +13,7 @@ const path = require('path');
 const http = require('http');
 
 // Database path
-const DB_PATH = path.join(process.env.APPDATA || '', 'multiterminal', 'tasks.db');
+const DB_PATH = path.join(process.env.APPDATA || '', 'multiterminal', 'multiterminal.db');
 
 // Subagent-to-Office bridge: maps agent IDs to registered terminal names
 const SUBAGENT_MAP_PATH = path.join(process.env.APPDATA || '', 'multiterminal', 'subagent-map.json');
@@ -383,7 +383,7 @@ async function run(hookData, deps = {}) {
   return { exitCode: 0 };
 }
 
-module.exports = { run };
+module.exports = { run, DB_PATH };
 
 // ── CLI shim (standalone invocation — preserves exact prior behavior) ─
 if (require.main === module) {

@@ -2,7 +2,7 @@
 /**
  * Plan Context Injection Hook for Claude Code SessionStart
  *
- * Retrieves active plan and kanban task context from tasks.db
+ * Retrieves active plan and kanban task context from multiterminal.db
  * and outputs formatted context for injection into the session.
  *
  * Usage (as Claude Code hook):
@@ -95,7 +95,7 @@ function getKanbanContext(db, terminalName) {
 }
 
 /**
- * Get active plan context from tasks.db
+ * Get active plan context from multiterminal.db
  * Mirrors the C# GenerateStartupContext method in PlanDatabase.cs
  */
 function getPlanContext() {
@@ -103,7 +103,7 @@ function getPlanContext() {
     const Database = requireBetterSqlite3();
     if (!Database) return null;
 
-    const dbPath = path.join(process.env.APPDATA || '', 'multiterminal', 'tasks.db');
+    const dbPath = path.join(process.env.APPDATA || '', 'multiterminal', 'multiterminal.db');
 
     if (!fs.existsSync(dbPath)) {
       return null;

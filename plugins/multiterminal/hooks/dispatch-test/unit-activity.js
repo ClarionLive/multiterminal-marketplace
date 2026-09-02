@@ -12,7 +12,9 @@
 const os = require('os');
 process.env.APPDATA = os.tmpdir(); // keep the debug-log append off the real path
 const assert = require('assert');
-const { run } = require('../activity-hook.js');
+const fs = require('fs');
+const path = require('path');
+const { run, DB_PATH } = require('../activity-hook.js');
 
 function spy() {
   const calls = [];
@@ -116,7 +118,28 @@ async function main() {
   assert.strictEqual(d.tool, 'Bash', 'original details survive alongside provenance');
   assert.strictEqual(d.agent_id, 'sub-9', 'provenance present on the same row');
 
-  console.log('activity run() unit: PASS (21 assertions)');
+  // ── The database the rows actually go to (MultiTerminal task edcdcdd5, live-test failure) ──
+  //
+  // Everything above proves the DISPATCH with a spy; none of it touches the real
+  // recordActivity(), whose DB_PATH still named tasks.db -- a 0-byte leftover with no
+  // tables, from the day the app's database became multiterminal.db. Every INSERT threw
+  // "no such table: activity_feed" straight into recordActivity's catch, which returns
+  // false, silently. The last TOOL_* row the app ever received was dated 2026-03-05; the
+  // attention rail shipped six months later on the premise that these rows existed, and
+  // the owner watched a card that never moved. Nothing in this suite could have failed.
+  assert.strictEqual(path.basename(DB_PATH), 'multiterminal.db',
+    'activity rows go to the live database, not the dead tasks.db');
+
+  // Census, not a roster: two OTHER hooks carried the same dead path. Naming them here
+  // would be written from the same wrong model that missed them, so instead every hook
+  // is scanned for the dead filename and the list of offenders must be empty.
+  const hooksDir = path.join(__dirname, '..');
+  const offenders = fs.readdirSync(hooksDir)
+    .filter((f) => f.endsWith('.js'))
+    .filter((f) => fs.readFileSync(path.join(hooksDir, f), 'utf8').includes('tasks.db'));
+  assert.deepStrictEqual(offenders, [], `hooks still naming tasks.db: ${offenders.join(', ')}`);
+
+  console.log('activity run() unit: PASS (23 assertions)');
 }
 
 main().catch((e) => { console.error(e); process.exit(1); });
