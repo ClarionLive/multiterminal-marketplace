@@ -75,7 +75,48 @@ async function main() {
   const r = await run({ hook_event_name: 'PreToolUse', tool_name: 'Edit', tool_input: {} }, { recordActivity: spy() });
   assert.strictEqual(r.exitCode, 0, 'returns exitCode 0');
 
-  console.log('activity run() unit: PASS (12 assertions)');
+  // ── Provenance + the Escape clear-edge (MultiTerminal task edcdcdd5) ──────────
+
+  // Stop -> TURN_END. This is the clear-edge for a block the owner DISMISSED rather
+  // than answered: pressing Escape submits no prompt, so UserPromptSubmit never fires
+  // and the alert stayed lit -- the owner saw a card pulsing 49 minutes after they had
+  // dismissed it. Escape ends the turn, so Stop fires.
+  ra = spy();
+  await run({ hook_event_name: 'Stop' }, { recordActivity: ra });
+  assert.strictEqual(ra.calls.length, 1, 'Stop records once');
+  assert.strictEqual(ra.calls[0][0], 'TURN_END', 'Stop -> TURN_END');
+
+  // agent_id is carried through, so a consumer can tell a SUBAGENT's tool call from its
+  // parent's. Both are logged under the parent's MULTITERMINAL_NAME -- measured at 19.5%
+  // of PreToolUse events -- so without this the rail would clear a parent that is still
+  // genuinely waiting, rendering a calm card that looks exactly like nobody needing you.
+  ra = spy();
+  await run({ hook_event_name: 'PostToolUse', tool_name: 'Edit', tool_input: { file_path: '/a/b.js' },
+              agent_id: 'sub-7', session_id: 'sess-1' }, { recordActivity: ra });
+  let d = JSON.parse(ra.calls[0][4]);
+  assert.strictEqual(d.agent_id, 'sub-7', 'subagent row carries agent_id');
+  assert.strictEqual(d.session_id, 'sess-1', 'row carries session_id');
+
+  // Main-thread rows carry the KEY with an explicit null rather than omitting it. A
+  // consumer must distinguish "this row says it was the main thread" from "this row
+  // predates provenance and cannot say", because the safe default for the second is
+  // possibly-subagent -- and that default inverts if absence is read as main-thread.
+  ra = spy();
+  await run({ hook_event_name: 'PostToolUse', tool_name: 'Edit', tool_input: { file_path: '/a/b.js' },
+              session_id: 'sess-1' }, { recordActivity: ra });
+  d = JSON.parse(ra.calls[0][4]);
+  assert.ok('agent_id' in d, 'main-thread row still carries the agent_id key');
+  assert.strictEqual(d.agent_id, null, 'main-thread agent_id is explicitly null');
+
+  // Provenance must not clobber a payload field of the same name.
+  ra = spy();
+  await run({ hook_event_name: 'PostToolUse', tool_name: 'Bash', tool_input: { command: 'echo hi' },
+              agent_id: 'sub-9' }, { recordActivity: ra });
+  d = JSON.parse(ra.calls[0][4]);
+  assert.strictEqual(d.tool, 'Bash', 'original details survive alongside provenance');
+  assert.strictEqual(d.agent_id, 'sub-9', 'provenance present on the same row');
+
+  console.log('activity run() unit: PASS (21 assertions)');
 }
 
 main().catch((e) => { console.error(e); process.exit(1); });

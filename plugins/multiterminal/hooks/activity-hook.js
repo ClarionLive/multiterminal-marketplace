@@ -235,6 +235,27 @@ async function run(hookData, deps = {}) {
 
   const data = hookData || {};
   const terminalName = process.env.MULTITERMINAL_NAME || 'Unknown';
+
+  // PROVENANCE (MultiTerminal task edcdcdd5). Stamped onto every row this hook writes.
+  //
+  // activity_feed.actor is MULTITERMINAL_NAME, which SUBAGENTS INHERIT -- so a subagent's tool
+  // calls are logged under its parent's name and are indistinguishable from the parent's own.
+  // Measured in the 2289bb8a spike at 12,544 of 64,444 PreToolUse events (19.5%).
+  //
+  // That matters because MultiTerminal's attention rail clears a "blocked on the owner" alert when
+  // it observes the agent working again. Clearing on a SUBAGENT's activity would clear a parent
+  // that is still genuinely waiting -- and a false clear renders a calm card, which looks exactly
+  // like nobody needing you. Refusing to clear only leaves a stale pulse, which is dismissible.
+  //
+  // agent_id is present on subagent-originated events (this file already relies on it for office
+  // register/disconnect) and absent for the main thread. A consumer MUST treat a row with no
+  // agent_id field at all -- every row written before this change -- as possibly-subagent rather
+  // than as main-thread, or the safe default inverts on exactly the historical data.
+  const provenance = {
+    agent_id: data.agent_id || null,
+    session_id: data.session_id || null,
+  };
+  const details = (obj) => JSON.stringify({ ...(obj || {}), ...provenance });
   const hookType = data.hook_event_name || data.hook_type || data.type;
   const tool = data.tool_name || data.tool || '';
   // Normalize input: Claude Code uses tool_input, not input
@@ -270,7 +291,7 @@ async function run(hookData, deps = {}) {
 
       const summary = getToolSummary(tool, data.input);
       _recordActivity('TOOL_START', terminalName, `${tool}: ${summary}`, 'info',
-        JSON.stringify({ tool, input: data.input }));
+        details({ tool, input: data.input }));
       break;
     }
 
@@ -301,7 +322,7 @@ async function run(hookData, deps = {}) {
           const severity = success ? 'info' : 'error';
 
           _recordActivity(activityType, terminalName, summary, severity,
-            JSON.stringify({ buildType, projectName, exitCode }));
+            details({ buildType, projectName, exitCode }));
           break;
         }
       }
@@ -311,7 +332,7 @@ async function run(hookData, deps = {}) {
 
       const summary = getToolSummary(tool, data.input);
       _recordActivity('TOOL_COMPLETE', terminalName, `${tool}: ${summary}`, 'info',
-        JSON.stringify({ tool }));
+        details({ tool }));
       break;
     }
 
@@ -319,7 +340,22 @@ async function run(hookData, deps = {}) {
       const error = data.error || data.output?.error || 'Unknown error';
       const summary = `${tool} failed: ${error.substring(0, 100)}`;
       _recordActivity('TOOL_FAILED', terminalName, summary, 'error',
-        JSON.stringify({ tool, error }));
+        details({ tool, error }));
+      break;
+    }
+
+    case 'Stop': {
+      // TURN_END is the clear-edge for a block the owner DISMISSED rather than answered
+      // (MultiTerminal task edcdcdd5).
+      //
+      // The 2289bb8a spike concluded UserPromptSubmit was the unblock signal. It is not sufficient:
+      // pressing ESCAPE on a permission prompt submits no prompt, so the alert stayed lit. The owner
+      // hit exactly this -- a card pulsing "needs permission" 49 minutes after they had dismissed it.
+      //
+      // Escape ends the turn, so Stop fires. "Turn ended" is not a block: nobody is being waited on.
+      // Recorded here rather than POSTed because the row is the transport MultiTerminal already
+      // polls, and adding an HTTP call to a hook that fires on every turn is not free.
+      _recordActivity('TURN_END', terminalName, 'Turn ended', 'info', details({}));
       break;
     }
 
@@ -327,7 +363,7 @@ async function run(hookData, deps = {}) {
       const agentType = data.subagent_type || data.agent_type || 'unknown';
       const description = data.description || data.prompt?.substring(0, 50) || '';
       _recordActivity('SUBAGENT_START', terminalName, `Started ${agentType}: ${description}`, 'info',
-        JSON.stringify({ agentType, description }));
+        details({ agentType, description }));
       // Note: Office registration handled by PreToolUse for Task tool (has full name data)
       break;
     }
@@ -338,7 +374,7 @@ async function run(hookData, deps = {}) {
       const activityType = success ? 'SUBAGENT_COMPLETE' : 'SUBAGENT_FAILED';
       const severity = success ? 'info' : 'warning';
       _recordActivity(activityType, terminalName, `${agentType} ${success ? 'completed' : 'failed'}`, severity,
-        JSON.stringify({ agentType, success }));
+        details({ agentType, success }));
       // Note: Office disconnect handled by PostToolUse for Task tool (has full name data)
       break;
     }
