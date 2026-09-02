@@ -109,7 +109,10 @@ async function run(hookData, deps = {}) {
     }
   } catch { /* ignore — project name is optional */ }
 
-  debugLog(`${timestamp} NOTIFICATION: type=${notificationType} agent=${agentName} project="${projectName}" title="${title}" message="${message.substring(0, 100)}"\n`);
+  // keys= is deliberately logged: it is the cheapest way to settle whether Claude Code supplies a
+  // tool_use_id on a Notification payload at all (MultiTerminal task 2289bb8a item 0 left that open
+  // rather than assuming it). Key NAMES only — no values, so nothing sensitive reaches the log.
+  debugLog(`${timestamp} NOTIFICATION: type=${notificationType} agent=${agentName} project="${projectName}" title="${title}" keys=${Object.keys(data).join(',')} message="${message.substring(0, 100)}"\n`);
 
   const payload = {
     notification_type: notificationType,
@@ -118,7 +121,19 @@ async function run(hookData, deps = {}) {
     session_id: data.session_id || '',
     agent_name: agentName,
     project_name: projectName,
-    cwd: cwd
+    cwd: cwd,
+
+    // ADDITIVE (MultiTerminal task 2289bb8a item 1). notification_type above keeps the flattened
+    // permission_request value ClaudeRemote's push contract depends on — do not change it. These
+    // two carry what that flattening destroys:
+    //   raw_type    — which of the three it actually was. permission_prompt wants a yes/no,
+    //                 elicitation_dialog is a real question, and idle_prompt is not a block at all
+    //                 and must not raise an alert. One value cannot mean all three.
+    //   tool_use_id — lets the consumer clear the alert when THIS call resolves, rather than
+    //                 guessing from whatever happens next. May legitimately be absent; consumers
+    //                 must degrade instead of assuming it is there.
+    raw_type: rawType,
+    tool_use_id: data.tool_use_id || ''
   };
 
   const result = await _callApi('/api/notifications', 'POST', payload);
