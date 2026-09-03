@@ -151,6 +151,44 @@ async function main() {
   }
 
   {
+    // SESSION ID DECIDES WHICH CARD THIS LANDS ON (MultiTerminal task ee17f42d, pipeline run 1).
+    //
+    // This is not a "carry the field" test. The hook previously read env.CLAUDE_SESSION_ID, a
+    // name Claude Code does NOT export to hook children — so it sent '' on every real run.
+    // AgentAttentionService keys a blank session id by AGENT NAME, while notification-hook.js
+    // keys its permission_prompt by the real uuid, so the two notifications landed on two
+    // different cards and the later one superseded the question. That is the "asking a
+    // question" -> "Needs permission" flip the Owner reported, and it survived a service-side
+    // guard written specifically to prevent it, because the guard compared one card to itself.
+    //
+    // stdin wins: the hook payload carries the authoritative session_id.
+    let body = null;
+    const f = async (url, opts = {}) => {
+      if (url.includes('/api/notifications')) body = JSON.parse(opts.body);
+      if (url.includes('/api/remote-mode')) return { ok: true, json: async () => ({ remote_mode: false }) };
+      return { ok: true, json: async () => ({}) };
+    };
+
+    await run({ ...askEvent, session_id: 'from-stdin' }, deps(f, {
+      env: { MULTITERMINAL_NAME: 'Tester', CLAUDE_CODE_SESSION_ID: 'from-env', CLAUDE_SESSION_ID: 'stale' },
+    }));
+    ok(body.session_id === 'from-stdin', 'stdin session_id wins over both env vars');
+
+    // Fallback, for a Claude Code build that stops putting session_id on the payload.
+    body = null;
+    await run(askEvent, deps(f, {
+      env: { MULTITERMINAL_NAME: 'Tester', CLAUDE_CODE_SESSION_ID: 'from-env' },
+    }));
+    ok(body.session_id === 'from-env', 'CLAUDE_CODE_SESSION_ID is the fallback');
+
+    // THE REGRESSION ITSELF: the old code read only this name, which is never set in a hook
+    // child. If this ever returns '' again the card silently splits in two.
+    body = null;
+    await run(askEvent, deps(f, { env: { MULTITERMINAL_NAME: 'Tester' } }));
+    ok(body.session_id === '', 'no session id available degrades to blank, not to undefined');
+  }
+
+  {
     // A DEAD PANEL MUST NEVER COST A QUESTION. If the notify throws, the hook still
     // completes normally — the rail not learning about a question is a worse card, not a
     // worse session.

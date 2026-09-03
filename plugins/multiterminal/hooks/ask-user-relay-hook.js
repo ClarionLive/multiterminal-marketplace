@@ -78,7 +78,21 @@ async function run(hookData, deps = {}) {
           message: q0.question
             ? `${agentName} asked: ${String(q0.question).substring(0, 140)}`
             : `${agentName} is waiting on an answer`,
-          session_id: env.CLAUDE_SESSION_ID || '',
+          // THE SESSION ID DECIDES WHICH CARD THIS LANDS ON, so getting it wrong is not a
+          // missing field — it is a notification about a DIFFERENT agent card.
+          //
+          // `env.CLAUDE_SESSION_ID` alone was wrong and silently so: Claude Code does not export
+          // that name into hook child processes (measured — the child sees CLAUDE_CODE_SESSION_ID
+          // and no CLAUDE_SESSION_ID; the session-start skill documents the same thing). It
+          // resolved to '' on every run, so AgentAttentionService keyed this notification by AGENT
+          // NAME while notification-hook.js keyed its permission_prompt by the real uuid. Two keys,
+          // two cards, and the later one superseded the question — which is the "asking a
+          // question" -> "Needs permission" flip the Owner reported, still happening after the
+          // service-side guard meant to prevent it (MultiTerminal task ee17f42d, pipeline run 1).
+          //
+          // stdin FIRST: the hook payload carries the authoritative session_id, which is what the
+          // sibling session-status-hook.js reads. The env vars are fallbacks, most-correct first.
+          session_id: event.session_id || env.CLAUDE_CODE_SESSION_ID || env.CLAUDE_SESSION_ID || '',
           agent_name: agentName,
           cwd: event.cwd || env.CLAUDE_PROJECT_DIR || '',
           tool_use_id: event.tool_use_id || ''
