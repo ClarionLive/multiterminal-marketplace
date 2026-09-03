@@ -139,7 +139,40 @@ async function main() {
     .filter((f) => fs.readFileSync(path.join(hooksDir, f), 'utf8').includes('tasks.db'));
   assert.deepStrictEqual(offenders, [], `hooks still naming tasks.db: ${offenders.join(', ')}`);
 
-  console.log('activity run() unit: PASS (23 assertions)');
+  // ── TOOL_QUIET: the clear-edge for read-only tools (MT task edcdcdd5) ──────
+  //
+  // SKIP_TOOLS used to DROP these completions entirely. That kept the Activity feed
+  // readable — one consumer's need — but it also removed the Attention Rail's clear
+  // edge, a different consumer with the opposite need: a completed Read says nothing
+  // worth showing but proves the agent is running again. The Owner's symptom was a
+  // card that kept pulsing after they answered a question, because AskUserQuestion
+  // fires no hook at all and ends no turn, so nothing else cleared it either.
+  for (const tool of ['Read', 'Glob', 'Grep', 'ToolSearch']) {
+    ra = spy();
+    await run({ hook_event_name: 'PostToolUse', tool_name: tool, tool_input: {} }, { recordActivity: ra });
+    assert.strictEqual(ra.calls.length, 1, `${tool} PostToolUse must still record a row`);
+    assert.strictEqual(ra.calls[0][0], 'TOOL_QUIET', `${tool} → TOOL_QUIET`);
+  }
+
+  // POLARITY GUARD. A skipped tool must NOT produce TOOL_COMPLETE: that type feeds the
+  // display line, so it would put "Read: foo.cs" on the card and reintroduce the very
+  // noise SKIP_TOOLS exists to prevent — just somewhere more prominent.
+  ra = spy();
+  await run({ hook_event_name: 'PostToolUse', tool_name: 'Read', tool_input: {} }, { recordActivity: ra });
+  assert.notStrictEqual(ra.calls[0][0], 'TOOL_COMPLETE', 'a skipped tool must not take the displaying type');
+
+  // A skipped tool must still write NOTHING on PreToolUse. TOOL_START never clears, so
+  // a quiet start row would be pure volume with no benefit.
+  ra = spy();
+  await run({ hook_event_name: 'PreToolUse', tool_name: 'Read', tool_input: {} }, { recordActivity: ra });
+  assert.strictEqual(ra.calls.length, 0, 'skipped tools still record nothing on PreToolUse');
+
+  // A NON-skipped tool is unaffected — the change must not have widened past SKIP_TOOLS.
+  ra = spy();
+  await run({ hook_event_name: 'PostToolUse', tool_name: 'Write', tool_input: { file_path: '/a/b.js' } }, { recordActivity: ra });
+  assert.strictEqual(ra.calls[0][0], 'TOOL_COMPLETE', 'Write still → TOOL_COMPLETE');
+
+  console.log('activity run() unit: PASS (34 assertions)');
 }
 
 main().catch((e) => { console.error(e); process.exit(1); });

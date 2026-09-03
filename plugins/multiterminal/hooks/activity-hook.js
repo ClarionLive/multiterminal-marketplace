@@ -327,8 +327,18 @@ async function run(hookData, deps = {}) {
         }
       }
 
-      // Skip noisy read-only tools
-      if (SKIP_TOOLS.has(tool)) break;
+      // A read-only tool's line is too noisy for the human-facing Activity feed — that is why
+      // SKIP_TOOLS exists and it is a good reason. But dropping the row ENTIRELY also removed
+      // the Attention Rail's clear-edge, which is a different consumer with the opposite need:
+      // a completed Read proves the agent is running again. Fused, a card stayed blocked through
+      // any read-only stretch and after every answered question (AskUserQuestion fires no hook
+      // at all and ends no turn, so it yields neither a completion row nor a TURN_END).
+      // TOOL_QUIET clears the card and is filtered out of the human-facing readers in
+      // ActivityFeedService.QuietToolTypes. Task edcdcdd5, Owner's live pass 2026-09-03.
+      if (SKIP_TOOLS.has(tool)) {
+        _recordActivity('TOOL_QUIET', terminalName, tool, 'info', details({ tool }));
+        break;
+      }
 
       const summary = getToolSummary(tool, data.input);
       _recordActivity('TOOL_COMPLETE', terminalName, `${tool}: ${summary}`, 'info',
