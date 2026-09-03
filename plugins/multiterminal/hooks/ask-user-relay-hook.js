@@ -48,6 +48,46 @@ async function run(hookData, deps = {}) {
       return { exitCode: 0 };
     }
 
+    // TELL THE ATTENTION RAIL THE OWNER IS BEING ASKED (MultiTerminal task ee17f42d).
+    //
+    // This runs BEFORE the remote-mode check on purpose. Remote mode decides where the QUESTION
+    // goes; it says nothing about whether the agent is blocked, and the answer is "yes" either way.
+    // Gating the notification on remote mode is exactly how the rail came to sit silent in the
+    // common case, since remote mode is off by default.
+    //
+    // Nothing else in the system observes an AskUserQuestion: it produces no activity_feed row,
+    // and it blocks rather than ending a turn, so no TURN_END either. Without this the card keeps
+    // whatever it last said — typically "Finished and idle" from an earlier TURN_END, which is not
+    // silence but the OPPOSITE of the truth.
+    //
+    // A PreToolUse row precedes the prompt it describes. For CLEARING that ordering is the hazard
+    // (2289bb8a finding 1, and why TOOL_START may never clear); for SETTING it is harmless — the
+    // question is about to appear, and a block raised a moment early costs nothing.
+    //
+    // Best-effort by construction: any failure is swallowed, and a question must never be delayed
+    // or blocked because a panel could not be told about it.
+    try {
+      const q0 = (event.tool_input && event.tool_input.questions || [])[0] || {};
+      await _fetch(`${apiBase}/api/notifications`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          notification_type: 'permission_request',
+          raw_type: 'ask_user_question',
+          title: 'ask_user_question',
+          message: q0.question
+            ? `${agentName} asked: ${String(q0.question).substring(0, 140)}`
+            : `${agentName} is waiting on an answer`,
+          session_id: env.CLAUDE_SESSION_ID || '',
+          agent_name: agentName,
+          cwd: event.cwd || env.CLAUDE_PROJECT_DIR || '',
+          tool_use_id: event.tool_use_id || ''
+        })
+      });
+    } catch {
+      // The rail not learning about a question is a worse card, not a worse session.
+    }
+
     // Check remote mode — if explicitly off, fall through to terminal prompt.
     // (Non-200 / unreachable behavior preserved verbatim: unreachable → return;
     // reachable-but-not-ok → proceed as before.)
