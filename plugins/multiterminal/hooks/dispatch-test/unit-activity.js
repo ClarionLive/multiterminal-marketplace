@@ -139,40 +139,89 @@ async function main() {
     .filter((f) => fs.readFileSync(path.join(hooksDir, f), 'utf8').includes('tasks.db'));
   assert.deepStrictEqual(offenders, [], `hooks still naming tasks.db: ${offenders.join(', ')}`);
 
-  // ── TOOL_QUIET: the clear-edge for read-only tools (MT task edcdcdd5) ──────
+  // ── TOOL_QUIET: every completion clears, only DISPLAY_TOOLS show (MT task edcdcdd5 item 2) ──
   //
-  // SKIP_TOOLS used to DROP these completions entirely. That kept the Activity feed
-  // readable — one consumer's need — but it also removed the Attention Rail's clear
-  // edge, a different consumer with the opposite need: a completed Read says nothing
-  // worth showing but proves the agent is running again. The Owner's symptom was a
-  // card that kept pulsing after they answered a question, because AskUserQuestion
-  // fires no hook at all and ends no turn, so nothing else cleared it either.
-  for (const tool of ['Read', 'Glob', 'Grep', 'ToolSearch']) {
+  // The hook is now MATCHER-BLIND in the dispatch table, and decides for itself. Previously
+  // two filters disagreed: the table gated it to Edit|Write|Bash|Task while a SKIP_TOOLS
+  // blacklist named four tools that could never arrive. Everything in the gap — PowerShell,
+  // every MCP call, every read — was dropped without anyone deciding to drop it, and since
+  // the Attention Rail's clear-edge reads these rows, a blocked card sat lit through all of it.
+  //
+  // Measured on raw transcripts: the four covered 629 of 1068 tool uses. 41% invisible.
+  //
+  // PowerShell leads this list deliberately — the Owner guessed it ("possibly a powershell
+  // command as well") and it was the largest single tool outside the old gate.
+  for (const tool of ['PowerShell', 'Read', 'Glob', 'Grep', 'ToolSearch', 'WebFetch', 'mcp__multiterminal__update_task_checklist']) {
     ra = spy();
     await run({ hook_event_name: 'PostToolUse', tool_name: tool, tool_input: {} }, { recordActivity: ra });
-    assert.strictEqual(ra.calls.length, 1, `${tool} PostToolUse must still record a row`);
+    assert.strictEqual(ra.calls.length, 1, `${tool} PostToolUse must record a row`);
     assert.strictEqual(ra.calls[0][0], 'TOOL_QUIET', `${tool} → TOOL_QUIET`);
   }
 
-  // POLARITY GUARD. A skipped tool must NOT produce TOOL_COMPLETE: that type feeds the
-  // display line, so it would put "Read: foo.cs" on the card and reintroduce the very
-  // noise SKIP_TOOLS exists to prevent — just somewhere more prominent.
+  // POLARITY GUARD. A non-displayed tool must NOT produce TOOL_COMPLETE: that type feeds the
+  // display line, so it would put "Read: foo.cs" on the card and move the Activity feed's
+  // noise somewhere more prominent rather than removing it.
   ra = spy();
   await run({ hook_event_name: 'PostToolUse', tool_name: 'Read', tool_input: {} }, { recordActivity: ra });
-  assert.notStrictEqual(ra.calls[0][0], 'TOOL_COMPLETE', 'a skipped tool must not take the displaying type');
+  assert.notStrictEqual(ra.calls[0][0], 'TOOL_COMPLETE', 'a non-displayed tool must not take the displaying type');
 
-  // A skipped tool must still write NOTHING on PreToolUse. TOOL_START never clears, so
-  // a quiet start row would be pure volume with no benefit.
+  // Non-displayed tools still write NOTHING on PreToolUse. TOOL_START never clears, so a quiet
+  // start row would be pure volume with no consumer.
+  for (const tool of ['Read', 'PowerShell']) {
+    ra = spy();
+    await run({ hook_event_name: 'PreToolUse', tool_name: tool, tool_input: {} }, { recordActivity: ra });
+    assert.strictEqual(ra.calls.length, 0, `${tool} records nothing on PreToolUse`);
+  }
+
+  // THE DISPLAY SET IS UNCHANGED — this is what keeps the Activity feed exactly as readable as
+  // it was. If these ever became TOOL_QUIET the feed would empty out, which is the opposite
+  // failure and just as silent.
+  for (const tool of ['Edit', 'Write', 'Bash']) {
+    ra = spy();
+    await run({ hook_event_name: 'PostToolUse', tool_name: tool, tool_input: { file_path: '/a/b.js', command: 'echo hi' } }, { recordActivity: ra });
+    assert.strictEqual(ra.calls[0][0], 'TOOL_COMPLETE', `${tool} still → TOOL_COMPLETE`);
+  }
+
+  // ...and they still write their displayed TOOL_START.
   ra = spy();
-  await run({ hook_event_name: 'PreToolUse', tool_name: 'Read', tool_input: {} }, { recordActivity: ra });
-  assert.strictEqual(ra.calls.length, 0, 'skipped tools still record nothing on PreToolUse');
+  await run({ hook_event_name: 'PreToolUse', tool_name: 'Edit', tool_input: { file_path: '/a/b.js' } }, { recordActivity: ra });
+  assert.strictEqual(ra.calls[0][0], 'TOOL_START', 'Edit still → TOOL_START');
 
-  // A NON-skipped tool is unaffected — the change must not have widened past SKIP_TOOLS.
-  ra = spy();
-  await run({ hook_event_name: 'PostToolUse', tool_name: 'Write', tool_input: { file_path: '/a/b.js' } }, { recordActivity: ra });
-  assert.strictEqual(ra.calls[0][0], 'TOOL_COMPLETE', 'Write still → TOOL_COMPLETE');
+  // ── THE GUARD THAT THE TESTS ABOVE CANNOT BE (MT task edcdcdd5 item 2) ─────────────
+  //
+  // Every assertion above calls run() directly, so they ALL stay green if someone re-adds a
+  // table-matcher to activity-hook — and the hook would then never be invoked for the tools
+  // they cover. That is exactly how this bug shipped the first time: a matcher added for a
+  // reason that had nothing to do with the clear-edge, silently deciding which tools could
+  // clear a blocked card, with a full green suite either side of it.
+  //
+  // So assert the routing itself. DISPLAY_TOOLS inside the hook is now the ONLY place that
+  // decides what shows; the table must not hold a second, disagreeing opinion.
+  {
+    const { TABLE } = require('../dispatch-hook.js');
+    const gated = [];
+    for (const [event, leaves] of Object.entries(TABLE)) {
+      for (const leaf of leaves) {
+        if (leaf.name === 'activity-hook' && leaf.matcher) gated.push(`${event}: ${leaf.matcher}`);
+      }
+    }
+    assert.deepStrictEqual(
+      gated, [],
+      `activity-hook must be matcher-blind — a table-matcher silently decides which tools can ` +
+      `clear a blocked card. Found: ${gated.join(', ')}`
+    );
 
-  console.log('activity run() unit: PASS (34 assertions)');
+    // And it must actually still be routed on the two events that matter. A leaf deleted
+    // outright would also satisfy "no matcher".
+    for (const event of ['PreToolUse', 'PostToolUse']) {
+      assert.ok(
+        (TABLE[event] || []).some((l) => l.name === 'activity-hook'),
+        `activity-hook must still be routed on ${event}`
+      );
+    }
+  }
+
+  console.log('activity run() unit: PASS (51 assertions)');
 }
 
 main().catch((e) => { console.error(e); process.exit(1); });

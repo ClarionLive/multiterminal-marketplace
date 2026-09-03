@@ -34,7 +34,25 @@ const BUILD_PATTERNS = [
 ];
 
 // Tools to skip logging (too noisy)
-const SKIP_TOOLS = new Set(['Read', 'Glob', 'Grep', 'ToolSearch']);
+// Tools whose completion is worth SHOWING in the human-facing Activity feed. Everything else
+// still records, as TOOL_QUIET — it clears MultiTerminal's Attention Rail without putting a line
+// on screen (MT task edcdcdd5 item 2).
+//
+// This replaced a SKIP_TOOLS blacklist ({Read, Glob, Grep, ToolSearch}), and the inversion is the
+// point rather than a tidy-up. A blacklist answers "what is too noisy to show?" — but the dispatch
+// table ALSO gated this hook to Edit|Write|Bash|Task, so the two disagreed: the blacklist named
+// four tools that could never arrive, while every tool outside the matcher was dropped without
+// anyone deciding to drop it. PowerShell, every MCP call and every subagent Task result fell into
+// that gap.
+//
+// The cost of the gap was not noise, it was silence: the rail's clear-edge reads these rows, so a
+// blocked card sat lit through anything outside those four. Measured against raw transcripts (NOT
+// this hook's own debug log, which only ever contained what it already recorded and is therefore
+// circular): the four covered 629 of 1068 tool uses, leaving 41% invisible — PowerShell alone 116.
+//
+// A whitelist cannot develop that gap. Membership answers exactly one question — does this line
+// belong on screen — and every non-member is still recorded.
+const DISPLAY_TOOLS = new Set(['Edit', 'Write', 'Bash', 'Task']);
 
 /**
  * Record activity to the MultiTerminal database
@@ -276,8 +294,10 @@ async function run(hookData, deps = {}) {
   // Handle different hook types
   switch (hookType) {
     case 'PreToolUse': {
-      // Skip noisy read-only tools
-      if (SKIP_TOOLS.has(tool)) break;
+      // Only displayed tools write a TOOL_START. There is no quiet equivalent here on purpose:
+      // TOOL_START feeds the display line and may NEVER clear a block (it is written before the
+      // prompt it may cause), so a quiet start row would be volume with no consumer.
+      if (!DISPLAY_TOOLS.has(tool)) break;
 
       // Register subagent when Task tool is about to be called
       if (tool === 'Task') {
@@ -327,15 +347,19 @@ async function run(hookData, deps = {}) {
         }
       }
 
-      // A read-only tool's line is too noisy for the human-facing Activity feed — that is why
-      // SKIP_TOOLS exists and it is a good reason. But dropping the row ENTIRELY also removed
-      // the Attention Rail's clear-edge, which is a different consumer with the opposite need:
-      // a completed Read proves the agent is running again. Fused, a card stayed blocked through
-      // any read-only stretch and after every answered question (AskUserQuestion fires no hook
-      // at all and ends no turn, so it yields neither a completion row nor a TURN_END).
-      // TOOL_QUIET clears the card and is filtered out of the human-facing readers in
-      // ActivityFeedService.QuietToolTypes. Task edcdcdd5, Owner's live pass 2026-09-03.
-      if (SKIP_TOOLS.has(tool)) {
+      // THE CLEAR-EDGE. Every completion is recorded; only DISPLAY_TOOLS get a line.
+      //
+      // A completed PowerShell, MCP call or Read says nothing worth showing, and proves the agent
+      // is running again — two consumers, opposite needs, one row stream. TOOL_QUIET carries the
+      // second without the first: MultiTerminal treats it as a clear-edge and never writes it to
+      // the display line, and its human-facing readers filter it at source
+      // (ActivityFeedService.QuietToolTypes).
+      //
+      // Task edcdcdd5, Owner's live pass 2026-09-03: "the cards don't seem to recognize anything
+      // but a Bash command (possibly a powershell command as well)". Almost exactly right — the
+      // recognised set was Edit|Write|Bash|Task, and PowerShell was the largest single tool
+      // outside it.
+      if (!DISPLAY_TOOLS.has(tool)) {
         _recordActivity('TOOL_QUIET', terminalName, tool, 'info', details({ tool }));
         break;
       }

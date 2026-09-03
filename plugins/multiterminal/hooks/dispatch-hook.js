@@ -39,18 +39,27 @@ const TABLE = {
   PreToolUse: [
     { name: 'safety-hook', mod: './safety-hook.js', head: 'sync' },
     { name: 'task-to-agent-hook', mod: './task-to-agent-hook.js', head: 'sync' },
-    // activity's SKIP_TOOLS is a BLACKLIST (records every non-skipped tool), so
-    // to preserve its hooks.json scope it carries a table-matcher (B′); otherwise
-    // matcher-blind dispatch would log WebSearch/MCP tools it never logged before.
-    { name: 'activity-hook', mod: './activity-hook.js', head: 'async', matcher: 'Edit|Write|Bash|Task' },
+    // activity-hook is MATCHER-BLIND (MT task edcdcdd5 item 2). It used to carry
+    // matcher: 'Edit|Write|Bash|Task' to preserve its pre-collapse hooks.json scope, and that
+    // scope quietly became load-bearing for something it was never chosen for: MT's Attention
+    // Rail clears a blocked card from these rows, so only those four tools could ever clear one.
+    // Measured against raw transcripts (not the hook's own log, which is circular): the four
+    // covered 629 of 1068 tool uses — 41% of activity was invisible, PowerShell alone 116.
+    // The hook now decides for itself, via DISPLAY_TOOLS: those four still produce the displayed
+    // TOOL_COMPLETE, everything else produces TOOL_QUIET, which clears without touching the
+    // display line. So the Activity feed keeps exactly the scope this matcher was protecting,
+    // and the clear-edge stops inheriting it by accident.
+    { name: 'activity-hook', mod: './activity-hook.js', head: 'async' },
     // ask-user-relay self-gates on tool_name==='AskUserQuestion' → matcher-blind safe.
     { name: 'ask-user-relay-hook', mod: './ask-user-relay-hook.js', head: 'sync' },
     // research-cache self-gates via extractQuery (non-Web tool → '' → no-op).
     { name: 'research-cache-hook', mod: './research-cache-hook.js', head: 'sync' },
   ],
   PostToolUse: [
-    // Same B′ table-matcher as PreToolUse — preserve activity's Edit|Write|Bash|Task scope.
-    { name: 'activity-hook', mod: './activity-hook.js', head: 'async', matcher: 'Edit|Write|Bash|Task' },
+    // Matcher-blind, same reasoning as PreToolUse above. THIS is the one that mattered: the
+    // clear-edge reads PostToolUse rows, so the matcher here is what made a card sit blocked
+    // through a PowerShell command, an MCP call, or a read-only stretch.
+    { name: 'activity-hook', mod: './activity-hook.js', head: 'async' },
     // commentary self-gates precisely via extractEvent (fires only on the union of
     // its matched tools), so it stays matcher-blind — no table-matcher needed.
     { name: 'commentary-hook', mod: './commentary-hook.js', head: 'async' },
