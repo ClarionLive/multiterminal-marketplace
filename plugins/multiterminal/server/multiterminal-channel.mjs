@@ -27,6 +27,13 @@ const CHANNEL_PORT = parseInt(process.env.CHANNEL_PORT || '8800', 10);
 const AGENT_NAME = process.env.MULTITERMINAL_NAME || 'unknown';
 const MT_API_URL = process.env.MT_API_URL || 'http://localhost:5050';
 const TERMINAL_ID = process.env.MULTITERMINAL_ID || '';
+// Proof-of-origin (task c9285d2a). MT seeds a per-launch secret into the terminal's child
+// environment and we inherit it. Echoing it on the port report is what lets the broker tell
+// THIS terminal re-reporting its own port apart from a foreign process claiming the same
+// name: a same-name registration that cannot present the row's nonce is refused. Without
+// this, the port report itself would be refused by that gate and push delivery would die
+// silently. Empty outside MT (nothing seeded it) — the broker fails open for unseeded rows.
+const LAUNCH_NONCE = process.env.MULTITERMINAL_LAUNCH_NONCE || '';
 
 // Track the actual listening port (may differ from CHANNEL_PORT after fallback)
 let actualPort = CHANNEL_PORT;
@@ -43,6 +50,7 @@ async function registerPortOnce(port) {
     const payload = JSON.stringify({
       name: AGENT_NAME,
       channelPort: port,
+      ...(LAUNCH_NONCE ? { nonce: LAUNCH_NONCE } : {}),
     });
     await fetch(`${MT_API_URL}/api/messaging/register`, {
       method: 'POST',
