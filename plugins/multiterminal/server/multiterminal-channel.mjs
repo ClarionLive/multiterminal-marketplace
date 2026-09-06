@@ -50,6 +50,13 @@ const TERMINAL_ID = process.env.MULTITERMINAL_ID || '';
 // silently. Empty outside MT (nothing seeded it) — the broker fails open for unseeded rows.
 const LAUNCH_NONCE = process.env.MULTITERMINAL_LAUNCH_NONCE || '';
 
+// Owning Claude Code process (task c9285d2a). This server and the `multiterminal` MCP server that
+// serves register_terminal are SIBLINGS under one claude.exe, so ppid is the same integer for both.
+// When MT launched the session the two share MULTITERMINAL_LAUNCH_NONCE and this is merely extra;
+// when it did not, this is the ONLY thing they share, and so the only way an adopted terminal can
+// show its port report and its registration come from one session.
+const OWNER_PID = process.ppid || 0;
+
 // Track the actual listening port (may differ from CHANNEL_PORT after fallback)
 let actualPort = CHANNEL_PORT;
 
@@ -77,6 +84,7 @@ async function registerPortOnce(port) {
       name: agentName,
       channelPort: port,
       ...(LAUNCH_NONCE ? { nonce: LAUNCH_NONCE } : {}),
+      ...(OWNER_PID ? { ownerPid: OWNER_PID } : {}),
     });
     await fetch(`${MT_API_URL}/api/messaging/register`, {
       method: 'POST',
@@ -755,6 +763,61 @@ function tryListen(port) {
   });
 }
 
+// ─── Adoption (task c9285d2a) ────────────────────────────────────────────────
+
+/**
+ * Ask MT which agent name, if any, the session owning THIS process has claimed.
+ *
+ * Resolution is by ppid on the broker side, so a process can only ever discover the row belonging
+ * to its own parent — it does not get to assert who it is. 404 is the normal, expected answer for a
+ * session that simply is not part of MultiTerminal, so it is not logged as a failure.
+ */
+async function fetchClaimedName() {
+  if (!OWNER_PID) return null;
+  try {
+    const res = await fetch(`${MT_API_URL}/api/messaging/channel-identity?ppid=${OWNER_PID}`);
+    if (!res.ok) return null;
+    const body = await res.json();
+    return body && typeof body.name === 'string' && body.name ? body.name : null;
+  } catch {
+    // MT not running, or not reachable. Indistinguishable from 'nobody has claimed a name' and
+    // handled the same way: keep waiting.
+    return null;
+  }
+}
+
+/** Bind an identity discovered after startup, then do exactly what a named session does at boot. */
+function adopt(name) {
+  agentName = name;
+  log(`Adopted the name "${name}" claimed by this session (pid ${OWNER_PID}). Starting listener.`);
+  tryListen(CHANNEL_PORT);
+}
+
+/**
+ * Poll until this session claims a name, or forever if it never does.
+ *
+ * Forever is deliberate: someone can open a plain shell, work for an hour, and only then decide to
+ * register the terminal. A poll that gave up would make that work sometimes, which is worse than
+ * never — an intermittent feature gets diagnosed as a broken one.
+ *
+ * The delays start short so `register your terminal as Lynn` feels immediate, then widen to the same
+ * 30s cadence the port heartbeat already uses, so an idle non-MT session costs one request every 30
+ * seconds rather than a spin.
+ */
+async function waitForAdoption() {
+  const delays = [500, 500, 1000, 1000, 2000, 3000, 5000, 10000, 30000];
+  for (let attempt = 0; ; attempt++) {
+    if (isBound()) return;
+    const name = await fetchClaimedName();
+    if (name) {
+      adopt(name);
+      return;
+    }
+    const wait = delays[Math.min(attempt, delays.length - 1)];
+    await new Promise((r) => setTimeout(r, wait));
+  }
+}
+
 if (isBound()) {
   tryListen(CHANNEL_PORT);
 } else {
@@ -764,6 +827,7 @@ if (isBound()) {
   // confusing line at startup for another. Dormant and quiet is the point.
   log(
     'Dormant: no MULTITERMINAL_NAME, so this session is not registered and cannot send or ' +
-    'receive. Nothing was written to the roster.',
+    `receive. Nothing was written to the roster. Watching for an identity claimed by pid ${OWNER_PID}.`,
   );
+  waitForAdoption();
 }
