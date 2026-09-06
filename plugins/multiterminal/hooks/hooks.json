@@ -23,7 +23,7 @@
             "args": [
               "-NoProfile",
               "-Command",
-              "Write-Output @'\nPARALLEL SUBAGENTS: ALWAYS use the Task tool to spawn subagents for non-trivial work. Launch multiple subagents IN PARALLEL (single message, multiple Task calls) whenever tasks are independent. Examples: exploring multiple directories, researching different topics, implementing separate features, running builds and tests. Prefer subagents over doing work directly - they reduce context usage and run concurrently. When planning implementation, break work into parallelizable chunks and dispatch subagents simultaneously.\n'@"
+              "if ($env:MULTITERMINAL_NAME) { Write-Output @'\nPARALLEL SUBAGENTS: ALWAYS use the Task tool to spawn subagents for non-trivial work. Launch multiple subagents IN PARALLEL (single message, multiple Task calls) whenever tasks are independent. Examples: exploring multiple directories, researching different topics, implementing separate features, running builds and tests. Prefer subagents over doing work directly - they reduce context usage and run concurrently. When planning implementation, break work into parallelizable chunks and dispatch subagents simultaneously.\n'@ }"
             ],
             "timeout": 2
           },

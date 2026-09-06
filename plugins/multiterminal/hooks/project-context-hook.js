@@ -266,6 +266,17 @@ module.exports = { run };
 // ── CLI shim (standalone invocation — preserves exact prior behavior) ─
 if (require.main === module) {
   (async () => {
+    // MT-ONLY (task c9285d2a). Registered on SessionStart with NO matcher, so it fires for every
+    // start of every session. That is confined to MT terminals under --plugin-dir, but once the
+    // plugin is installed at USER SCOPE it would inject MultiTerminal project context into every
+    // Claude Code session on the machine — including projects MT does not manage.
+    //
+    // Guarded on the CLI entry only, so run() stays directly callable by tests.
+    if (!process.env.MULTITERMINAL_NAME) {
+      process.exit(0);
+      return;
+    }
+
     // Read hook input from stdin
     let input = '';
     for await (const chunk of process.stdin) {

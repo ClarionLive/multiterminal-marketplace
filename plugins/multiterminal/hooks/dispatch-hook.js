@@ -229,6 +229,24 @@ module.exports = { dispatch, TABLE, STANDALONE };
 
 if (require.main === module) {
   (async () => {
+    // MT-ONLY (task c9285d2a). This dispatcher is registered for ~12 events, so under
+    // --plugin-dir it runs only in terminals MT launched. Once the plugin is installed at USER
+    // SCOPE it would run in EVERY Claude Code session on the machine, and none of its leaves
+    // belong there: 10 of the 15 address MultiTerminal's broker on localhost:5050 by agent name
+    // and have nothing to say without one, while the self-contained ones (safety-hook's
+    // deny/ask policy, inbox-check's stop decision) would quietly extend MT's behaviour to
+    // projects that never opted into it.
+    //
+    // Bail before any leaf runs. This preserves today's behaviour for non-MT sessions exactly,
+    // rather than granting them a policy they have never had.
+    //
+    // The guard is on the CLI entry, NOT inside dispatch(): dispatch() is exported and driven
+    // directly by dispatch-test, which must stay independent of the ambient environment.
+    if (!process.env.MULTITERMINAL_NAME) {
+      process.exit(0);
+      return;
+    }
+
     const eventName = process.argv[2] || '';
     const head = process.argv[3] || 'sync';
     let input = '';
