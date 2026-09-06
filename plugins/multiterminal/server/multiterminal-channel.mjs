@@ -24,7 +24,22 @@ import { z } from 'zod';
 import http from 'node:http';
 
 const CHANNEL_PORT = parseInt(process.env.CHANNEL_PORT || '8800', 10);
-const AGENT_NAME = process.env.MULTITERMINAL_NAME || 'unknown';
+// Identity (task c9285d2a). This used to be a const defaulting to 'unknown', which meant a
+// session nobody had named still registered itself into MT's roster under that placeholder —
+// every such session claiming the SAME name, each on its own port, last writer winning. It starts
+// UNSET instead: while unbound this server registers nothing, claims no name, and answers no
+// message. A `let` rather than a const because adoption rebinds it once a session registers.
+let agentName = process.env.MULTITERMINAL_NAME || null;
+
+/** True once this session has an identity — from the environment, or later by adoption. */
+function isBound() {
+  return agentName !== null;
+}
+
+/** Display-only. Never use this as an address: 'unbound' is not a name, it is the absence of one. */
+function nameForLog() {
+  return agentName ?? 'unbound';
+}
 const MT_API_URL = process.env.MT_API_URL || 'http://localhost:5050';
 const TERMINAL_ID = process.env.MULTITERMINAL_ID || '';
 // Proof-of-origin (task c9285d2a). MT seeds a per-launch secret into the terminal's child
@@ -38,17 +53,28 @@ const LAUNCH_NONCE = process.env.MULTITERMINAL_LAUNCH_NONCE || '';
 // Track the actual listening port (may differ from CHANNEL_PORT after fallback)
 let actualPort = CHANNEL_PORT;
 
+// Whether we actually bound a port. Distinct from actualPort, which is seeded with the DEFAULT and
+// so reads as 8800 even when nothing was ever bound — a dormant session logging ':8800' would send
+// someone hunting a port conflict that does not exist.
+let listening = false;
+
 // Logging to stderr (stdout is reserved for MCP stdio transport)
 function log(msg) {
-  process.stderr.write(`[mt-channel:${AGENT_NAME}:${actualPort}] ${msg}\n`);
+  process.stderr.write(`[mt-channel:${nameForLog()}:${listening ? actualPort : '-'}] ${msg}\n`);
 }
 
 // ─── Report actual port to broker ─────────────────────────────────────────────
 
 async function registerPortOnce(port) {
+  // Defensive: the caller is already gated on isBound(), but a roster row is the one side effect
+  // that outlives this process, so refuse it here too rather than trusting one call site.
+  if (!isBound()) {
+    log('Not registering a port: this session has no identity.');
+    return false;
+  }
   try {
     const payload = JSON.stringify({
-      name: AGENT_NAME,
+      name: agentName,
       channelPort: port,
       ...(LAUNCH_NONCE ? { nonce: LAUNCH_NONCE } : {}),
     });
@@ -62,7 +88,7 @@ async function registerPortOnce(port) {
     const verifyRes = await fetch(`${MT_API_URL}/api/messaging/terminals`);
     if (verifyRes.ok) {
       const terminals = await verifyRes.json();
-      const me = terminals.find(t => t.name.toLowerCase() === AGENT_NAME.toLowerCase());
+      const me = terminals.find(t => t.name.toLowerCase() === agentName.toLowerCase());
       if (me && me.channelPort === port) {
         return true;
       }
@@ -106,7 +132,7 @@ function startPortHeartbeat(port) {
       const verifyRes = await fetch(`${MT_API_URL}/api/messaging/terminals`);
       if (!verifyRes.ok) return;
       const terminals = await verifyRes.json();
-      const me = terminals.find(t => t.name.toLowerCase() === AGENT_NAME.toLowerCase());
+      const me = terminals.find(t => t.name.toLowerCase() === agentName.toLowerCase());
       if (me && me.channelPort === port) return; // Still correct, nothing to do
       // Port was overwritten or cleared — re-register
       log(`Heartbeat: port drift detected (broker has ${me?.channelPort}, need ${port}), re-registering...`);
@@ -120,7 +146,7 @@ function startPortHeartbeat(port) {
 // ─── MCP Server ──────────────────────────────────────────────────────────────
 
 const mcp = new Server(
-  { name: `multiterminal-${AGENT_NAME}`, version: '1.0.0' },
+  { name: `multiterminal-${nameForLog()}`, version: '1.0.0' },
   {
     capabilities: {
       experimental: {
@@ -130,7 +156,10 @@ const mcp = new Server(
       tools: {},
     },
     instructions: [
-      `You are connected to MultiTerminal's messaging channel as "${AGENT_NAME}".`,
+      isBound()
+        ? `You are connected to MultiTerminal's messaging channel as "${agentName}".`
+        : 'This session is NOT registered with MultiTerminal: it has no agent name, so it cannot ' +
+          'send or receive channel messages and does not appear in the team roster.',
       'Messages from other agents arrive as <channel source="multiterminal" from="SenderName" priority="normal"> tags.',
       'To reply, use the "reply" tool with the sender\'s name and your message.',
       'To send a message to any agent (not just replying), use the "send" tool.',
@@ -231,8 +260,8 @@ mcp.setNotificationHandler(PermissionRequestSchema, async ({ params }) => {
   // Structured prefix lets ClaudeRemote detect this as a permission request
   // and render approve/deny/always buttons instead of raw text.
   // Format: [PERMISSION_REQUEST:requestId:agentName:toolName]
-  const prefix = `[PERMISSION_REQUEST:${params.request_id}:${AGENT_NAME}:${params.tool_name}]`;
-  const prompt = `${prefix}\n🔐 ${AGENT_NAME} wants to run ${params.tool_name}:\n${params.description}`;
+  const prefix = `[PERMISSION_REQUEST:${params.request_id}:${nameForLog()}:${params.tool_name}]`;
+  const prompt = `${prefix}\n🔐 ${nameForLog()} wants to run ${params.tool_name}:\n${params.description}`;
 
   try {
     await sendViaApi('ClaudeRemote', prompt, 'high');
@@ -245,11 +274,19 @@ mcp.setNotificationHandler(PermissionRequestSchema, async ({ params }) => {
 // ─── Send message via MultiTerminal REST API ─────────────────────────────────
 
 async function sendViaApi(to, message, priority) {
-  // Use AGENT_NAME as fromTerminalId — TERMINAL_ID is not available at startup
+  // fromTerminalId IS the agent name (below), so an unbound session cannot send: it would have to
+  // invent a sender. Fail loudly here rather than posting a message attributed to nobody.
+  if (!isBound()) {
+    throw new Error(
+      'This session is not registered with MultiTerminal, so it has no name to send from. ' +
+      'Register the terminal first, then retry.',
+    );
+  }
+  // Use agentName as fromTerminalId — TERMINAL_ID is not available at startup
   // because it's assigned during registration (after the MCP server is already running).
   // MessageBroker.GetTerminal() resolves by name, so this works.
   const payload = JSON.stringify({
-    fromTerminalId: AGENT_NAME,
+    fromTerminalId: agentName,
     to,
     message,
     priority,
@@ -301,8 +338,13 @@ const seenMessageIds = new Map();
  * AND naming somebody else.
  */
 function isAddressedToMe(to) {
+  // An unbound session has no name, so nothing can be addressed to it — INCLUDING the
+  // omitted-recipient case below. That tolerance exists for older MT builds that sent no `to`
+  // field; read while unbound it would turn 'I don't know who this is for' into 'it is for me',
+  // which is how an unnamed session would end up swallowing another agent's mail.
+  if (!isBound()) return false;
   if (to === undefined || to === null || to === '') return true;
-  return String(to).toLowerCase() === AGENT_NAME.toLowerCase();
+  return String(to).toLowerCase() === agentName.toLowerCase();
 }
 
 /**
@@ -509,7 +551,7 @@ const httpServer = http.createServer(async (req, res) => {
   // Health check
   if (req.method === 'GET' && req.url === '/health') {
     res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ status: 'ok', agent: AGENT_NAME, port: actualPort }));
+    res.end(JSON.stringify({ status: 'ok', agent: agentName, port: actualPort }));
     return;
   }
 
@@ -547,11 +589,11 @@ const httpServer = http.createServer(async (req, res) => {
       // marked delivered and lost. A non-2xx leaves the queue row retryable, and the
       // message reaches its real recipient once the port record corrects itself.
       if (!isAddressedToMe(msg.to)) {
-        log(`REFUSED message ${msg.id ?? '?'} from ${from}: addressed to "${msg.to}", but this port belongs to ${AGENT_NAME}`);
+        log(`REFUSED message ${msg.id ?? '?'} from ${from}: addressed to "${msg.to}", but this port belongs to ${agentName}`);
         res.writeHead(409, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({
           status: 'wrong_recipient',
-          agent: AGENT_NAME,
+          agent: agentName,
           addressedTo: msg.to,
         }));
         return;
@@ -563,7 +605,7 @@ const httpServer = http.createServer(async (req, res) => {
       if (hasSeenMessage(msg.id)) {
         log(`Ignored duplicate message ${msg.id} from ${from} (already delivered)`);
         res.writeHead(200, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ status: 'duplicate_ignored', agent: AGENT_NAME }));
+        res.end(JSON.stringify({ status: 'duplicate_ignored', agent: agentName }));
         return;
       }
 
@@ -595,7 +637,7 @@ const httpServer = http.createServer(async (req, res) => {
         markMessageSeen(msg.id); // handled successfully — a replay is a genuine duplicate
         log(`Permission verdict from ${from}: ${word} ${reqId}`);
         res.writeHead(200, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ status: 'verdict_recorded', agent: AGENT_NAME }));
+        res.end(JSON.stringify({ status: 'verdict_recorded', agent: agentName }));
         return;
       }
 
@@ -620,7 +662,7 @@ const httpServer = http.createServer(async (req, res) => {
 
       log(`Received message from ${from}: ${content.substring(0, 80)}...`);
       res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ status: 'delivered', agent: AGENT_NAME }));
+      res.end(JSON.stringify({ status: 'delivered', agent: agentName }));
     } catch (err) {
       log(`Error processing message: ${err.message}`);
       res.writeHead(400, { 'Content-Type': 'application/json' });
@@ -668,7 +710,7 @@ const httpServer = http.createServer(async (req, res) => {
       });
 
       res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ status: 'delivered', agent: AGENT_NAME }));
+      res.end(JSON.stringify({ status: 'delivered', agent: agentName }));
     } catch (err) {
       res.writeHead(400, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ error: err.message }));
@@ -707,9 +749,21 @@ function tryListen(port) {
 
   server.listen(port, '127.0.0.1', () => {
     actualPort = port;
+    listening = true;
     log(`HTTP listener ready on port ${actualPort}`);
     reportPortToBroker(actualPort);
   });
 }
 
-tryListen(CHANNEL_PORT);
+if (isBound()) {
+  tryListen(CHANNEL_PORT);
+} else {
+  // No identity, so no listener and no roster row. Nothing can route to this session, so a port
+  // would only be a surface with no purpose. The MCP server above is still connected, which is
+  // deliberate: exiting here would show up in Claude Code as a FAILED MCP server, trading one
+  // confusing line at startup for another. Dormant and quiet is the point.
+  log(
+    'Dormant: no MULTITERMINAL_NAME, so this session is not registered and cannot send or ' +
+    'receive. Nothing was written to the roster.',
+  );
+}
