@@ -800,12 +800,29 @@ function adopt(name) {
  * register the terminal. A poll that gave up would make that work sometimes, which is worse than
  * never — an intermittent feature gets diagnosed as a broken one.
  *
- * The delays start short so `register your terminal as Lynn` feels immediate, then widen to the same
- * 30s cadence the port heartbeat already uses, so an idle non-MT session costs one request every 30
- * seconds rather than a spin.
+ * The ramp starts sub-second and settles at ADOPTION_POLL_TAIL_MS. It does NOT widen to the port
+ * heartbeat's 30s, and the difference is the whole point.
+ *
+ * `attempt` counts from THIS PROCESS'S START, not from the moment someone registers — there is no
+ * signal that could reset it, because a dormant server has no port for the broker to push to (that
+ * is exactly what item 1's dormant state buys). So the wait a human actually experiences is just
+ * the gap between consecutive polls at the instant they register. A tail of 30s therefore meant a
+ * 30s wait for everyone except the handful who register in the first few seconds of the shell's
+ * life — and the paragraph above says the motivating case is someone registering an HOUR later.
+ * The old schedule optimised a window almost nobody registers in.
+ *
+ * Measured on the live build before this changed (task c9285d2a): registering ~8s into the process
+ * cost 8.1s, registering past the ramp cost 30.2s. Same code, same machine; the variable was purely
+ * when the human typed.
+ *
+ * The cost of the flat tail is one loopback GET every ADOPTION_POLL_TAIL_MS per dormant shell,
+ * against a process already running on the same machine. That is cheap enough that trading it for
+ * a 10x latency cut was not a close call (Owner decision, 2026-09-07).
  */
+const ADOPTION_POLL_TAIL_MS = 3000;
+
 async function waitForAdoption() {
-  const delays = [500, 500, 1000, 1000, 2000, 3000, 5000, 10000, 30000];
+  const delays = [500, 500, 1000, 1000, 2000, ADOPTION_POLL_TAIL_MS];
   for (let attempt = 0; ; attempt++) {
     if (isBound()) return;
     const name = await fetchClaimedName();
