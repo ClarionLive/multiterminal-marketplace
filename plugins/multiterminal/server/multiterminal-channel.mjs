@@ -835,6 +835,80 @@ async function waitForAdoption() {
   }
 }
 
+// ─── Release this session's identity on shutdown ──────────────────────────
+
+/**
+ * How long a shutdown may wait on the broker. The POST is a loopback call that normally finishes in
+ * single-digit milliseconds; this cap exists so a hung or half-dead MT cannot hold a terminal open.
+ * Releasing is an OPTIMISATION — the roster's liveness check (task d1151661) is the actual
+ * guarantee — so it must never be the reason a shutdown drags.
+ */
+const RELEASE_TIMEOUT_MS = 1500;
+
+let releasing = false;
+
+/**
+ * Best-effort release of this session's roster row (task d1151661).
+ *
+ * The Owner's report was: "/quit and Robin is still in the Terminals list even though his terminal
+ * is gone." For an ADOPTED session this is the ONLY release path that exists — the SessionEnd hook
+ * early-returns when MULTITERMINAL_NAME is unset, which is the defining property of adoption, and
+ * UnregisterTerminal needs a docId such a row never has. For an env-bound session the hook already
+ * POSTs this, so here it is belt-and-braces: the hook failing to fire is this ticket's original
+ * complaint.
+ *
+ * Deliberately does NOTHING while unbound. A dormant session holds no name, and a server that has
+ * claimed nothing must release nothing.
+ */
+async function releaseIdentity(reason) {
+  // SIGINT followed by SIGTERM, or an impatient second Ctrl+C, must not double-post or race two
+  // shutdowns against each other. The first one wins; the rest fall straight through to the exit.
+  if (releasing) return;
+  releasing = true;
+
+  if (!isBound()) return;
+
+  try {
+    await fetch(`${MT_API_URL}/api/messaging/disconnect`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: agentName }),
+      signal: AbortSignal.timeout(RELEASE_TIMEOUT_MS),
+    });
+    log(`Released the roster row for "${agentName}" (${reason}).`);
+  } catch {
+    // MT is gone, unreachable, or too slow. Nothing to do and nothing worth failing over: the row
+    // simply outlives us, which is exactly the state the roster's liveness check already covers.
+  }
+}
+
+/**
+ * ⚠️ On Windows there are no real signals: `process.kill(pid, 'SIGTERM')` maps to TerminateProcess
+ * and NO handler runs. A signal-only implementation of this feature would therefore be dead code on
+ * the platform MT actually ships on. The parent closing our stdin is the shutdown that genuinely
+ * happens to a stdio MCP server, and it is portable.
+ *
+ * StdioServerTransport listens for 'data' and 'error' only (see its start()), never 'end', so this
+ * does not fight the transport for the stream. stdin is already flowing by now because mcp.connect()
+ * ran above — a paused stdin would never emit 'end' at all.
+ */
+process.stdin.on('end', () => {
+  // The parent that speaks MCP to us is gone, so there is nobody left to serve.
+  releaseIdentity('stdin closed').finally(() => process.exit(0));
+});
+
+for (const signal of ['SIGINT', 'SIGTERM']) {
+  process.on(signal, () => {
+    // ⚠️ Registering ANY listener for these SUPPRESSES Node's default handler — the one that would
+    // otherwise terminate the process. The explicit exit below is not tidiness: without it, adding
+    // this feature would stop Ctrl+C from stopping the server.
+    //
+    // Exit 0 rather than the conventional 128+signum, because this is a requested orderly shutdown
+    // and a non-zero code makes Claude Code report the MCP server as having failed.
+    releaseIdentity(signal).finally(() => process.exit(0));
+  });
+}
+
 if (isBound()) {
   tryListen(CHANNEL_PORT);
 } else {
