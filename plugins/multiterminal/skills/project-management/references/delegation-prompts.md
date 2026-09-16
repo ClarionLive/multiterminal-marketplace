@@ -32,7 +32,7 @@ Do NOT just reply with text - you MUST call the tool.
 
 ### Worktree Isolation Instructions
 
-Include this in coding agent prompts when `isolation: "worktree"` is used (see Step 5.3 of project-management):
+Include this in coding agent prompts when `isolation: "worktree"` is used (see Step 5.3a of project-management):
 
 ```
 WORKTREE ISOLATION:

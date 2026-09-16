@@ -274,7 +274,23 @@ Ask via AskUserQuestion:
 - **Manual assign**
 - **Round-robin**
 
-### 5.3: Assign & Spawn
+### 5.3: Choose the Kind of Team
+
+There are two kinds of team, and they are not interchangeable:
+
+| | **Subagent team** (5.3a) | **MultiTerminal helper team** (5.3b) |
+|---|---|---|
+| What | Task-tool subagents inside your session | Real terminals in their own panes, via `spawn_helper` |
+| Report back | `SendMessage` to `team-lead` | The MultiTerminal channel (`send_message` / `reply`) |
+| Board identity | No | Yes: claims, checklist items, `list_terminals` |
+| Cost | Cheap, fast | A full session each; ~10–30s to boot |
+| Ends | Shutdown protocol | Only the Owner can close a pane |
+
+**Default to 5.3a.** Use 5.3b only when the work must outlive your turn, the Owner wants to watch or steer it, it needs its own board identity or environment, or you need an agent that can disagree with you.
+
+**If `TeamCreate` is not available in this session** (Claude Code's agent teams feature is not enabled), 5.3a still works without it: spawn the subagents with the Task/Agent tool and no `team_name`, and collect their results directly. Don't switch to helpers just because `TeamCreate` is missing.
+
+### 5.3a: Assign & Spawn a Subagent Team
 
 For each pending item, use `assign_checklist_item`. Then create a team and spawn agents:
 
@@ -294,11 +310,19 @@ Task(subagent_type="general-purpose", team_name="task-[id]", name="Agent [Name]"
 
 > **Note:** If only ONE coding agent is needed (SMALL/MEDIUM with single agent), worktree isolation is optional — it adds merge overhead. Use it when 2+ agents will work simultaneously.
 
+### 5.3b: Assign & Spawn a MultiTerminal Helper Team
+
+**Read `references/helper-teams.md` first.** It has the spawn call, the job template, what to do on `spawn_failed`, and how to shut the team down.
+
+1. `assign_checklist_item` for each item, and `add_helper(taskId, helper, addedBy)` for each helper.
+2. `spawn_helper(agentName, spawnerName=<your name>, projectId, initialPrompt=<filled job template>)` for each helper. Spawning them together is fine. **Record the `terminalName` from each result**, because a reused name comes back suffixed.
+3. The job must be **self-contained**: the helper has none of your context.
+
 ### 5.4: Record State
 
 Write continuation notes:
-- `TEAM MODE` marker
-- Team name, agent assignments (which agent has which items)
+- `TEAM MODE` marker, and which kind of team (subagent or helper)
+- Team name, agent assignments (which agent has which items); for helpers, each `terminalName`
 - Current phase: `CODING`
 
 → **Step 7** (Monitoring)
@@ -315,6 +339,8 @@ Write continuation notes:
 - Worktree Isolation Instructions (shared block — include when using `isolation: "worktree"`)
 - Structured Completion Report (shared block — always include for coding agents)
 
+**For a MultiTerminal helper team, see `references/helper-teams.md`** for the job template. It uses the Structured Completion Report block but not the Shutdown Protocol block.
+
 Fill in all `[bracketed]` placeholders. Include the relevant row from CLAUDE.md's "Task-Specific File Guide" for the area being worked on.
 
 ---
@@ -326,9 +352,11 @@ After spawning, monitor — do NOT code.
 ### 7.1: Event-Driven Monitoring
 Act on incoming agent messages. Refresh task detail after each. If no messages for 2+ minutes, check via `get_task_detail`. If an agent hasn't reported in 5+ minutes, send a status ping.
 
+**Helper team:** reports arrive over the MultiTerminal channel, not as `SendMessage`. Check `get_inbox` for `spawn_failed` too. A helper that hasn't collected its job within a minute or two has probably failed; see `references/helper-teams.md` before resending anything.
+
 ### 7.2: Agent Completions
 When an agent reports items done:
-- Verify items are in "testing" via task detail
+- **Treat the report as a claim.** Verify by artifact: the items are in "testing" via task detail, and the commit the agent named exists on the branch. A "done" message is not evidence.
 - If more pending items exist, assign and instruct the agent to continue
 
 ### 7.3: Update Continuation Notes
