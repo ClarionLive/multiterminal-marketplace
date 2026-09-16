@@ -461,6 +461,48 @@ function dtrace(msg) {
   try { fs.appendFileSync(DEBUG_PATH, `[${new Date().toISOString()}] ${msg}\n`); } catch (e) { /* ignore */ }
 }
 
+/**
+ * Asks MT whether a spawned helper's job is waiting (task 8b270b37). Resolves to MT's status string
+ * ('pending' | 'collected' | 'no_job') on a 200, and to 'unknown' on anything else, including a 404
+ * from an MT build without the route, a refused connection, a timeout, or a malformed body. Never
+ * throws, and never delays startup by more than timeoutMs.
+ */
+function probeSpawnJobStatus(docId, timeoutMs = 2000) {
+  return new Promise((resolve) => {
+    if (!docId) { resolve('unknown'); return; }
+    let settled = false;
+    const done = (value) => { if (!settled) { settled = true; resolve(value); } };
+    try {
+      const http = require('http');
+      const req = http.request({
+        hostname: 'localhost',
+        port: 5050,
+        path: `/api/spawn/job/${encodeURIComponent(docId)}`,
+        method: 'GET',
+        timeout: timeoutMs,
+      }, (res) => {
+        let body = '';
+        res.on('data', (chunk) => { body += chunk; });
+        res.on('end', () => {
+          if (res.statusCode !== 200) { done('unknown'); return; }
+          try {
+            const status = JSON.parse(body).status;
+            done(typeof status === 'string' ? status : 'unknown');
+          } catch (_e) {
+            done('unknown');
+          }
+        });
+        res.on('error', () => done('unknown'));
+      });
+      req.on('error', () => done('unknown'));
+      req.on('timeout', () => { req.destroy(); done('unknown'); });
+      req.end();
+    } catch (_e) {
+      done('unknown');
+    }
+  });
+}
+
 async function main() {
   let input = '';
   for await (const chunk of process.stdin) {
@@ -521,7 +563,23 @@ async function main() {
       if (isSpawnedAgent && hookData.source !== 'clear') {
         console.log(`## Spawned Agent: ${terminalName}`);
         console.log(`Spawned by: ${spawnerName}`);
-        console.log('Waiting for task assignment from spawner...');
+
+        // Task 8b270b37: a spawned helper COLLECTS its job; MT no longer pushes it. Both push paths
+        // lost jobs silently (typed: the submit became a newline in the composer; channel: a message
+        // sent before Claude Code started listening was dropped while the channel server answered 200).
+        //
+        // The job itself is NOT printed here: hook output is cut to a ~2KB preview and a job can be
+        // 16,000 chars. This only asks MT whether a job is waiting, using a read-only status route
+        // that never returns the job and never consumes it. Anything but a 200 "pending" (an older MT
+        // without the route answers 404; MT down; timeout) keeps the pre-8b270b37 wording, so this
+        // hook and the app can be updated in either order.
+        const jobStatus = await probeSpawnJobStatus(process.env.MULTITERMINAL_DOC_ID);
+        dtrace(`STEP 3b: spawn job status for ${process.env.MULTITERMINAL_DOC_ID || '(no docId)'} = ${jobStatus}`);
+        if (jobStatus === 'pending') {
+          console.log(`YOUR FIRST ACTION: call the get_my_spawn_job tool (multiterminal MCP server) and carry out the job it returns. ${spawnerName} gave you that job when spawning you, and it is waiting for you. Do this before anything else, including replying to any "initializing..." message. The call is also how MultiTerminal confirms the job reached you.`);
+        } else {
+          console.log('Waiting for task assignment from spawner...');
+        }
         break;
       }
 
