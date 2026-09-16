@@ -1,6 +1,6 @@
 ---
 name: project-management
-description: Orchestrates the full development lifecycle — task dashboard, planning, team assembly, code review, build verification, and testing coordination. Tiered workflows (SMALL/MEDIUM/LARGE) scale ceremony to task complexity. Use when picking up work, managing agents, or coordinating multi-step development tasks. Triggered by /session-start menu (options 2-3) or manually via /project-management. Do NOT auto-run at session start — /session-start handles that now.
+description: The PM skill for a project. Orchestrates the full development lifecycle — task dashboard, planning, team assembly, code review, build verification, and testing coordination — and is the skill that BUILDS AND RUNS A TEAM, either Task-tool subagents or MultiTerminal helpers in their own panes (spawn_helper). Tiered workflows (SMALL/MEDIUM/LARGE) scale ceremony to task complexity. Use when the user says "you are the PM", "act as project manager", "be the PM on this project", "build/assemble a team", "spawn helpers", or asks you to pick up work, manage agents, or coordinate multi-step development. Also routed from the /session-start menu or invoked via /project-management. Do NOT auto-run at session start — /session-start handles that. For sequencing an existing batch of 2+ tickets across agents, see program-management.
 version: 6.0.0
 ---
 

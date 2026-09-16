@@ -1,6 +1,6 @@
 ---
 name: program-management
-description: Coordinate multi-ticket programs across reviewers and quality gates as a PM. Use whenever the user says "act as PM", "be the program manager", "dispatch these tickets", "run this multi-ticket program", "coordinate this batch of work", OR describes a batch of 2+ related tickets needing sequenced dispatch and gate handling. Distinct from `/kanban-task` (single-ticket lifecycle) — use this skill whenever scope spans multiple tickets coordinated together, even if the user doesn't explicitly say "program."
+description: Coordinate an existing batch of 2+ related tickets across agents, reviewers and quality gates — sequencing, dispatch, finding triage, and scope calls. Use when the user says "be the program manager", "dispatch these tickets", "run this multi-ticket program", "coordinate this batch of work", OR describes a batch of 2+ related tickets needing sequenced dispatch and gate handling. It does NOT build or spawn a team — for "you are the PM" / "act as PM" on a project, assembling a team, or spawning helpers, use project-management. Distinct from `/kanban-task` (single-ticket lifecycle).
 ---
 
 # Program Management

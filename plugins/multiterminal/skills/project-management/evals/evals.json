@@ -63,6 +63,31 @@
       ]
     },
     {
+      "name": "trigger-you-are-the-pm",
+      "category": "trigger",
+      "priority": "P1",
+      "prompt": "you are the PM on this project",
+      "should_trigger": true,
+      "description": "Role assignment phrasing. Must load project-management (which assembles and runs teams), not program-management (which coordinates an existing batch of tickets and has no spawning)",
+      "assertions": [
+        "project-management activates, not program-management",
+        "Proceeds to discover terminal identity and the board state rather than starting to code"
+      ]
+    },
+    {
+      "name": "trigger-spawn-helper-team",
+      "category": "trigger",
+      "priority": "P1",
+      "prompt": "spin up two helpers in their own panes to work on the inbox redesign ticket, I want to watch them",
+      "should_trigger": true,
+      "description": "Explicit request for a MultiTerminal helper team (visible panes), which is Step 5.3b",
+      "assertions": [
+        "Skill activates and routes to Step 5.3b (helper team), not 5.3a (subagents)",
+        "Reads references/helper-teams.md before calling spawn_helper",
+        "Passes its own terminal name as spawnerName and records each terminalName from the results"
+      ]
+    },
+    {
       "name": "trigger-testing-review",
       "category": "trigger",
       "priority": "P1",
