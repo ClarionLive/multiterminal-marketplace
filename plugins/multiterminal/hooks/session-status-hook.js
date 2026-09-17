@@ -200,6 +200,27 @@ function resolveHookProjectId(db) {
   return { id: bestId, degraded: false };
 }
 
+// Project ids are either 8-hex short ids or GUIDs (both are in the projects table), so this
+// allows letters, digits and hyphens rather than requiring a GUID. What it exists to reject is a
+// newline or any other character that would let the value write extra lines into the identity block.
+const PROJECT_ID_SHAPE = /^[A-Za-z0-9-]+$/;
+
+// Task 760827ad: the terminal the Owner opens on a project is that project's manager. MultiTerminal
+// decides this at launch and sets MULTITERMINAL_PROJECT_PM='true' only when the terminal has a project
+// and no spawner (ConPtyTerminal.BuildProjectPmEnvAssignment). The spawner is checked again here
+// because a helper can reach the identity block — after /clear it deliberately takes the normal path —
+// and an older MT build, or an environment inherited from a PM terminal, could carry the variable.
+// Only the exact value 'true' counts, because that is the only value MT writes. A project id of any
+// other shape means no role rather than a sanitised one: a PM line naming a mangled project is worse
+// than none, and "no role line" keeps the routing that existed before PM roles.
+// Returns the lines for the identity block; empty when this terminal is not a PM.
+function projectManagerRoleLines(env) {
+  const projectId = env.MULTITERMINAL_PROJECT_ID;
+  if (env.MULTITERMINAL_PROJECT_PM !== 'true' || env.MULTITERMINAL_SPAWNER) return [];
+  if (!projectId || !PROJECT_ID_SHAPE.test(projectId)) return [];
+  return ['MULTITERMINAL_ROLE=project-manager', `MULTITERMINAL_PROJECT_ID=${projectId}`];
+}
+
 function getKanbanContext(db, terminalName, projectId) {
   const tableCheck = db.prepare(`
     SELECT name FROM sqlite_master
@@ -634,6 +655,7 @@ async function main() {
       console.log(`MULTITERMINAL_NAME=${terminalName}`);
       console.log(`MULTITERMINAL_DOC_ID=${process.env.MULTITERMINAL_DOC_ID || ''}`);
       console.log(`CLAUDE_SESSION_ID=${sessionId || ''}`);
+      for (const line of projectManagerRoleLines(process.env)) console.log(line);
       console.log('');
 
       // Surface a missing native DB module to the user instead of silently no-op'ing
@@ -866,4 +888,4 @@ if (require.main === module) {
   });
 }
 
-module.exports = { resolveHookProjectId };
+module.exports = { resolveHookProjectId, projectManagerRoleLines };

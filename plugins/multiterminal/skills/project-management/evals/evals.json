@@ -19,11 +19,90 @@
       "category": "trigger",
       "priority": "P0",
       "prompt": "initializing...",
-      "should_trigger": true,
-      "description": "Session hook auto-trigger — the system-reminder directive tells the agent to run /project-management",
+      "should_trigger": false,
+      "description": "Session start belongs to /session-start (the hook's AUTO-RUN directive names it). project-management loads only after a work choice in that menu, even in a PM terminal (ticket 760827ad)",
       "assertions": [
-        "Skill activates via session hook directive",
-        "Quick Start routing question presented without loading the full board first"
+        "/session-start runs, not project-management",
+        "project-management is not loaded before the session-start menu is answered"
+      ]
+    },
+    {
+      "name": "routed-continue-pm",
+      "category": "routing",
+      "priority": "P0",
+      "prompt": "Skill(skill=\"project-management\", args=\"from-session-start:continue\")",
+      "preconditions": {
+        "hook_identity": "MULTITERMINAL_ROLE=project-manager present",
+        "board_state": "1 active task with checklist (2 pending, 1 testing), assigned to this terminal"
+      },
+      "description": "PM picked Continue in session-start (ticket 760827ad)",
+      "assertions": [
+        "Does NOT show the Quick Start menu again",
+        "Routes to Step 2 and shows the active task's dashboard",
+        "Offers Resume work / Review & test / Update plan / View details"
+      ]
+    },
+    {
+      "name": "routed-pick-task-pm",
+      "category": "routing",
+      "priority": "P0",
+      "prompt": "Skill(skill=\"project-management\", args=\"from-session-start:pick-task\")",
+      "preconditions": {
+        "hook_identity": "MULTITERMINAL_ROLE=project-manager present",
+        "board_state": "1 active task, 1 paused task and 2 todo tasks"
+      },
+      "description": "PM picked Pick a task in session-start (ticket 760827ad)",
+      "assertions": [
+        "Does NOT show the Quick Start menu again",
+        "Does NOT resume the active task automatically",
+        "Calls get_my_pickable_tasks and presents a numbered list",
+        "After the user picks: claims if needed, set_task_active, then routes per 2.3"
+      ]
+    },
+    {
+      "name": "routed-pick-task-pm-empty",
+      "category": "routing",
+      "priority": "P1",
+      "prompt": "Skill(skill=\"project-management\", args=\"from-session-start:pick-task\")",
+      "preconditions": {
+        "hook_identity": "MULTITERMINAL_ROLE=project-manager present",
+        "board_state": "get_my_pickable_tasks returns no tasks"
+      },
+      "description": "PM picked Pick a task and there is nothing to pick (ticket 760827ad, pipeline run 1 fix)",
+      "assertions": [
+        "Calls get_my_pickable_tasks with this terminal's agentName",
+        "Says there are no tasks to pick up and offers to start something new",
+        "Does NOT create a task unprompted"
+      ]
+    },
+    {
+      "name": "pm-resume-small-no-helpers",
+      "category": "routing",
+      "priority": "P0",
+      "prompt": "resume work",
+      "preconditions": {
+        "hook_identity": "MULTITERMINAL_ROLE=project-manager present",
+        "state": "Step 2.3 on an active task whose remaining work is 1 pending item touching one file"
+      },
+      "description": "A PM sizes the work before bringing in helpers; SMALL means doing it yourself (ticket 760827ad)",
+      "assertions": [
+        "Classifies the remaining work as SMALL",
+        "Works the item itself: no TeamCreate, no spawn_helper, no coding subagent team",
+        "The pipeline still runs before the user tests"
+      ]
+    },
+    {
+      "name": "spawned-helper-not-pm",
+      "category": "routing",
+      "priority": "P1",
+      "prompt": "you are the PM on this project",
+      "preconditions": {
+        "hook_identity": "Spawned Agent block (MULTITERMINAL_SPAWNER set), no MULTITERMINAL_ROLE line"
+      },
+      "description": "A spawned helper has no PM role, even when told it is the PM (ticket 760827ad, decision 1: helpers must not start spawning helpers)",
+      "assertions": [
+        "Does not claim the project-manager role for this terminal",
+        "Does not call spawn_helper or TeamCreate"
       ]
     },
     {

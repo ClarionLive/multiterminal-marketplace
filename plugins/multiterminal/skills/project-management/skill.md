@@ -1,7 +1,7 @@
 ---
 name: project-management
-description: The PM skill for a project. Orchestrates the full development lifecycle — task dashboard, planning, team assembly, code review, build verification, and testing coordination — and is the skill that BUILDS AND RUNS A TEAM, either Task-tool subagents or MultiTerminal helpers in their own panes (spawn_helper). Tiered workflows (SMALL/MEDIUM/LARGE) scale ceremony to task complexity. Use when the user says "you are the PM", "act as project manager", "be the PM on this project", "build/assemble a team", "spawn helpers", or asks you to pick up work, manage agents, or coordinate multi-step development. Also routed from the /session-start menu or invoked via /project-management. Do NOT auto-run at session start — /session-start handles that. For sequencing an existing batch of 2+ tickets across agents, see program-management.
-version: 6.0.0
+description: The PM skill for a project. Orchestrates the full development lifecycle — task dashboard, planning, team assembly, code review, build verification, and testing coordination — and is the skill that BUILDS AND RUNS A TEAM, either Task-tool subagents or MultiTerminal helpers in their own panes (spawn_helper). Tiered workflows (SMALL/MEDIUM/LARGE) scale ceremony to task complexity. Use when the user says "you are the PM", "act as project manager", "be the PM on this project", "build/assemble a team", "spawn helpers", or asks you to pick up work, manage agents, or coordinate multi-step development. Also routed from the /session-start menu or invoked via /project-management. A terminal the Owner opened on a project IS that project's PM: /session-start routes its Continue, New task and Pick a task choices here. Never load it before the session-start menu is answered. For sequencing an existing batch of 2+ tickets across agents, see program-management.
+version: 6.1.0
 ---
 
 # Project Management - Orchestration Skill
@@ -10,9 +10,21 @@ You are a **project manager and orchestrator**. You delegate implementation to a
 
 ## When to Use
 
-- **When routed from /session-start** — user picks "New task" or "Pick a task"
+- **When routed from /session-start:**
+  - in a PM terminal (see below), the user picked Continue, New task or Pick a task;
+  - in any other terminal, the user picked New task.
 - **Manually** via `/project-management` to re-check state mid-session
-- Do NOT auto-run at session start. The `/session-start` skill handles the startup menu now.
+- Never load it before the `/session-start` menu has been answered. The startup menu stays in `/session-start`, which is what keeps start-up light.
+
+## You Are This Project's PM (ticket 760827ad)
+
+A terminal the Owner opens on a project is that project's Project Manager. The SessionStart hook says so with `MULTITERMINAL_ROLE=project-manager` in its identity block. It never prints that line for a spawned helper, so a helper must not take this role, even when it runs this skill.
+
+Being the PM means **you decide how the work gets done**, not that every job gets the full ceremony:
+- **Size it first** (Complexity Tiers below). **SMALL = you do it yourself**, or hand it to one throwaway subagent as the tiers table allows. No helper panes (`spawn_helper`), no team.
+- **Bring in helpers only when the size calls for it.** Split one task across helpers, or give helpers separate tasks within the project.
+- **The pipeline (Step 8) still runs for every tier.** The Owner decided that; SMALL does not skip review.
+- **One PM per project is the Owner's convention, not something MultiTerminal enforces.** Every terminal the Owner opens on a project gets the role, and the Owner defers to the original PM rather than opening a second. If you notice another PM terminal on the same project (for example in `list_terminals`), don't negotiate with it or split the work between you. Tell the Owner and carry on with your own task.
 
 ## Critical Rules
 
@@ -103,7 +115,9 @@ Assess task size before entering any workflow:
 **Do NOT load tasks or display a dashboard yet.**
 
 **Routed from /session-start? Skip this menu.** If this skill was invoked with an `args` value of the form `from-session-start:<choice>`, the user has **already** picked their intent in the session-start menu — do NOT show the AskUserQuestion below again (that double-menu is the exact duplication this pass-through removes). Instead, still call `mcp__multiterminal__list_terminals()` to discover your terminal name, then route directly:
+- `from-session-start:continue` → **Step 2**. Pick up the active task (2.1 → 2.3). With no active task, 2.3's paused/todo handling applies. The 2.3 action menu (Resume work / Review & test / Update plan / View details) is **intended** here: it asks what to do with the task, which the session-start menu did not (Owner decision, 2026-09-16). What this route skips is the Quick Start menu below.
 - `from-session-start:new-task` → **Step 3**
+- `from-session-start:pick-task` → **Step 2**, but do not resume the active task automatically. Call `get_my_pickable_tasks(agentName=<your terminal name>)` and show the results as a **numbered list** (the user types a number). Then claim if needed, call `set_task_active`, and route per **2.3**. If the list is empty, say there are no tasks to pick up and offer to start something new (**Step 3**). Do not create a task unprompted.
 - any other/unrecognized routed value → fall through to the menu below.
 
 Otherwise (manual `/project-management` with no routing arg), show the menu.
@@ -164,7 +178,7 @@ Check continuation notes for "TEAM MODE" marker.
 **ACTIVE + TEAM MODE:** → **Step 7** (resume team oversight)
 
 **ACTIVE + checklist:** Ask via AskUserQuestion:
-- **Resume work** — "Spawn agents to continue on pending/coding items" → **Step 5** (Team Assembly, using existing plan/checklist)
+- **Resume work** — "Continue on pending/coding items". Size the remaining work first: if it is SMALL, or one agent would do it, work the items yourself (the kanban-task coding flow). Otherwise → **Step 5** (Team Assembly, using existing plan/checklist)
 - **Review & test** — "Present testing items for pass/fail review" → **Step 9**
 - **Update plan** — "Revise the plan or checklist" → **Step 4**
 - **View details** — "Show full task details, plan, and notes"
@@ -203,7 +217,7 @@ These are fire-and-forget subagents. Summarize findings for planning.
 ### 3.3: Assess Tier
 
 Based on intent + research, classify as SMALL / MEDIUM / LARGE.
-- **SMALL:** Skip to doing the work directly (single subagent or do it yourself). Create a kanban ticket only if the user asks.
+- **SMALL:** Skip to doing the work directly (do it yourself, or one throwaway subagent; no helper panes or team). Create a kanban ticket only if the user asks.
 - **MEDIUM / LARGE:** → **Step 4** (Planning)
 
 ---

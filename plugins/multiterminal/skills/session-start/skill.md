@@ -1,7 +1,7 @@
 ---
 name: session-start
-description: Auto-run at session start. Lightweight startup menu — presents quick choices (continue task, new task, pick task, just chat) so the user decides how to spend the session. No heavy loading until a choice is made.
-version: 2.1.0
+description: Auto-run at session start. Lightweight startup menu — presents quick choices (continue task, new task, pick task, just chat) so the user decides how to spend the session. No heavy loading until a choice is made. A terminal the Owner opened on a project is that project's Project Manager, and its work choices route through project-management.
+version: 2.2.0
 ---
 
 # session-start
@@ -22,8 +22,10 @@ Before anything else, you MUST identify yourself:
    MULTITERMINAL_NAME=<name>
    MULTITERMINAL_DOC_ID=<doc-id>
    CLAUDE_SESSION_ID=<session-uuid>
+   MULTITERMINAL_ROLE=project-manager      ← only when this terminal is its project's PM
+   MULTITERMINAL_PROJECT_ID=<project-id>   ← only together with the ROLE line
    ```
-   Save all three. **Prefer this source** — the hook receives the live session id via stdin (`hookData.session_id`) and is authoritative. This is the ONLY reliable source for `CLAUDE_SESSION_ID`, because Claude Code does NOT export it into the child shell (so the bash echo below cannot recover it).
+   Save all three, plus **IS_PM** = true if and only if the block contains `MULTITERMINAL_ROLE=project-manager` (then also save PROJECT_ID). The hook prints the role only for a terminal the Owner opened on a project, never for a spawned helper, so do **not** derive IS_PM any other way: not from `$MULTITERMINAL_PROJECT_PM`, `$MULTITERMINAL_TEAM_LEAD`, your name, or the project's team lead. No role line (a non-project terminal, a helper, or an older hook/MT) means IS_PM = false, which keeps the routing that existed before PM roles. **Prefer this source** — the hook receives the live session id via stdin (`hookData.session_id`) and is authoritative. This is the ONLY reliable source for `CLAUDE_SESSION_ID`, because Claude Code does NOT export it into the child shell (so the bash echo below cannot recover it).
 2. **Fallback only if those lines are absent** (older hook, or running outside MultiTerminal): run `echo "$MULTITERMINAL_NAME|$MULTITERMINAL_DOC_ID|$CLAUDE_SESSION_ID"` and parse the three `|`-separated values (name, doc ID, session ID). Note that `$CLAUDE_SESSION_ID` will be empty in this fallback — without a session id, skip `register_session` (step 5).
 3. **Only call `register_terminal(name=YOUR_NAME, docId=YOUR_DOC_ID)` if BOTH values are non-empty.** This ensures you don't accidentally rename another terminal by passing a stale/inherited docId.
 4. If only the name is set (no docId), call `register_terminal(name=YOUR_NAME)` without a docId — you'll get a fresh registration.
@@ -37,10 +39,11 @@ Before anything else, you MUST identify yourself:
 
 ### 2. Read Previous Session + Active Task
 
-**Call all three in parallel:**
+**Call these in parallel** (three, or four for a PM):
 1. `get_latest_session(projectPath=PROJECT_ROOT, agentName=YOUR_NAME, skip=0, excludeSessionId=YOUR_SESSION_ID)` — returns the previous session with its **summary**. This call auto-ensures the session is fully processed (imports messages, indexes chunks, generates summary on demand). The summary it returns is reliable — trust it.
 2. `get_my_active_task(agentName=YOUR_NAME)` — checks for your current active task on the kanban board.
 3. **Remote-mode detection:** run `curl -s http://localhost:5050/api/remote-mode` (Bash). Response is `{"remote_mode":true}` or `{"remote_mode":false}`. Save the boolean as REMOTE_MODE for the greeting (step 3). If the call fails or the JSON has no `remote_mode` key (API down, older MT build), treat it as **unknown** — skip the remote-mode line in the greeting entirely; do NOT retry or block on it.
+4. **Only if IS_PM:** `get_project(projectId=PROJECT_ID)`. Save the project's name as PROJECT_NAME for the greeting. If the call fails, keep IS_PM = true and just leave the name out; the role comes from the hook, not from this lookup.
 
 **How to use the results:**
 - `get_latest_session` returns a summary. **Use this summary as your primary context** for the greeting. It's generated from the actual session messages and describes what was worked on.
@@ -78,6 +81,8 @@ Summarize what the **previous session** was about in 2-3 sentences based on the 
 - `Remote mode: ON — the owner is away; questions route to their phone (follow the Remote Question Protocol in CLAUDE.md).`
 - `Remote mode: OFF — the owner is at the desk; ask questions in chat as normal.`
 - If REMOTE_MODE is unknown (fetch failed), omit the line — never guess.
+
+**PM line:** if IS_PM, add one line to the greeting: `You're the Project Manager for **<PROJECT_NAME>**. I'll size each piece of work and decide whether it needs helpers.` (Without a PROJECT_NAME: `You're this project's Project Manager. …`.) Say nothing about roles when IS_PM is false.
 
 If there's also a Last Session Recap in the system reminders from the hook, incorporate that too.
 
@@ -119,6 +124,16 @@ Stop after presenting the AskUserQuestion. Do NOT run any other skills until the
 
 **IMPORTANT: Follow these routing rules EXACTLY. Do NOT call list_tasks or any other MCP tool unless specified.**
 
+**If IS_PM** (this terminal is its project's Project Manager, ticket 760827ad), every work choice goes to project-management, which sizes the work and decides whether helpers are needed. Pass the choice so it does not show its own menu again:
+
+- **Continue** → `Skill(skill="project-management", args="from-session-start:continue")`. Do NOT list tasks first.
+- **New task** → `Skill(skill="project-management", args="from-session-start:new-task")`.
+- **Pick a task** → `Skill(skill="project-management", args="from-session-start:pick-task")`. Do NOT fetch or list tasks here; project-management presents them.
+- **Just chat** → Do nothing. Respond naturally to whatever they say next. Do not load project-management.
+- **Other (direct instruction)** → Just do what they asked. No skill needed.
+
+**Otherwise** (IS_PM is false):
+
 - **Continue** → Immediately run `/kanban-task` using the Skill tool (`skill="kanban-task"`). Do NOT list tasks first. The kanban-task skill will auto-detect the active task and resume it.
 - **New task** → Run `/project-management` using the Skill tool (`skill="project-management"`, `args="from-session-start:new-task"`). Passing the routed choice tells project-management the user has **already** answered the "what do you want to do?" question here, so its Step 1 skips the duplicate menu and goes straight to new-work.
 - **Pick a task** → Call `get_my_pickable_tasks()` (do NOT use `list_tasks`). Present results as a **numbered list** so the user can type a number to select. Then run `/kanban-task`.
@@ -127,4 +142,4 @@ Stop after presenting the AskUserQuestion. Do NOT run any other skills until the
 
 ---
 
-**Key principle:** This skill is FAST. One env var check, one register_terminal call, one register_session call (registers this session + closes previous), three parallel calls (get_latest_session with auto-ensure-ready + active task + remote-mode curl), and an interactive menu. The session lifecycle pipeline guarantees the previous session's summary is available. When routing, go DIRECTLY to the skill — don't add extra steps.
+**Key principle:** This skill is FAST. One env var check, one register_terminal call, one register_session call (registers this session + closes previous), three parallel calls (get_latest_session with auto-ensure-ready + active task + remote-mode curl; a fourth, get_project, only for a PM), and an interactive menu. The project-management skill is loaded only after a work choice, never before the menu. The session lifecycle pipeline guarantees the previous session's summary is available. When routing, go DIRECTLY to the skill — don't add extra steps.
