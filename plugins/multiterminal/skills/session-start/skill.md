@@ -124,18 +124,20 @@ Stop after presenting the AskUserQuestion. Do NOT run any other skills until the
 
 **IMPORTANT: Follow these routing rules EXACTLY. Do NOT call list_tasks or any other MCP tool unless specified.**
 
+In both blocks below, call project-management by its plugin-qualified name `multiterminal:project-management`, exactly as written. The bare `project-management` has been refused as "Unknown skill".
+
 **If IS_PM** (this terminal is its project's Project Manager, ticket 760827ad), every work choice goes to project-management, which sizes the work and decides whether helpers are needed. Pass the choice so it does not show its own menu again:
 
-- **Continue** → `Skill(skill="project-management", args="from-session-start:continue")`. Do NOT list tasks first.
-- **New task** → `Skill(skill="project-management", args="from-session-start:new-task")`.
-- **Pick a task** → `Skill(skill="project-management", args="from-session-start:pick-task")`. Do NOT fetch or list tasks here; project-management presents them.
+- **Continue** → `Skill(skill="multiterminal:project-management", args="from-session-start:continue")`. Do NOT list tasks first.
+- **New task** → `Skill(skill="multiterminal:project-management", args="from-session-start:new-task")`.
+- **Pick a task** → `Skill(skill="multiterminal:project-management", args="from-session-start:pick-task")`. Do NOT fetch or list tasks here; project-management presents them.
 - **Just chat** → Do nothing. Respond naturally to whatever they say next. Do not load project-management.
 - **Other (direct instruction)** → Just do what they asked. No skill needed.
 
 **Otherwise** (IS_PM is false):
 
 - **Continue** → Immediately run `/kanban-task` using the Skill tool (`skill="kanban-task"`). Do NOT list tasks first. The kanban-task skill will auto-detect the active task and resume it.
-- **New task** → Run `/project-management` using the Skill tool (`skill="project-management"`, `args="from-session-start:new-task"`). Passing the routed choice tells project-management the user has **already** answered the "what do you want to do?" question here, so its Step 1 skips the duplicate menu and goes straight to new-work.
+- **New task** → Run `/project-management` using the Skill tool (`skill="multiterminal:project-management"`, `args="from-session-start:new-task"`). Passing the routed choice tells project-management the user has **already** answered the "what do you want to do?" question here, so its Step 1 skips the duplicate menu and goes straight to new-work.
 - **Pick a task** → Call `get_my_pickable_tasks()` (do NOT use `list_tasks`). Present results as a **numbered list** so the user can type a number to select. Then run `/kanban-task`.
 - **Just chat** → Do nothing. Respond naturally to whatever they say next.
 - **Other (direct instruction)** → Just do what they asked. No skill needed.

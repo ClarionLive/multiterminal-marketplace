@@ -30,7 +30,7 @@
       "name": "routed-continue-pm",
       "category": "routing",
       "priority": "P0",
-      "prompt": "Skill(skill=\"project-management\", args=\"from-session-start:continue\")",
+      "prompt": "Skill(skill=\"multiterminal:project-management\", args=\"from-session-start:continue\")",
       "preconditions": {
         "hook_identity": "MULTITERMINAL_ROLE=project-manager present",
         "board_state": "1 active task with checklist (2 pending, 1 testing), assigned to this terminal"
@@ -46,7 +46,7 @@
       "name": "routed-pick-task-pm",
       "category": "routing",
       "priority": "P0",
-      "prompt": "Skill(skill=\"project-management\", args=\"from-session-start:pick-task\")",
+      "prompt": "Skill(skill=\"multiterminal:project-management\", args=\"from-session-start:pick-task\")",
       "preconditions": {
         "hook_identity": "MULTITERMINAL_ROLE=project-manager present",
         "board_state": "1 active task, 1 paused task and 2 todo tasks"
@@ -63,7 +63,7 @@
       "name": "routed-pick-task-pm-empty",
       "category": "routing",
       "priority": "P1",
-      "prompt": "Skill(skill=\"project-management\", args=\"from-session-start:pick-task\")",
+      "prompt": "Skill(skill=\"multiterminal:project-management\", args=\"from-session-start:pick-task\")",
       "preconditions": {
         "hook_identity": "MULTITERMINAL_ROLE=project-manager present",
         "board_state": "get_my_pickable_tasks returns no tasks"

@@ -1,7 +1,7 @@
 ---
 name: project-management
-description: The PM skill for a project. Orchestrates the full development lifecycle — task dashboard, planning, team assembly, code review, build verification, and testing coordination — and is the skill that BUILDS AND RUNS A TEAM, either Task-tool subagents or MultiTerminal helpers in their own panes (spawn_helper). Tiered workflows (SMALL/MEDIUM/LARGE) scale ceremony to task complexity. Use when the user says "you are the PM", "act as project manager", "be the PM on this project", "build/assemble a team", "spawn helpers", or asks you to pick up work, manage agents, or coordinate multi-step development. Also routed from the /session-start menu or invoked via /project-management. A terminal the Owner opened on a project IS that project's PM: /session-start routes its Continue, New task and Pick a task choices here. Never load it before the session-start menu is answered. For sequencing an existing batch of 2+ tickets across agents, see program-management.
-version: 6.1.0
+description: A project's PM skill. Sizes work (SMALL/MEDIUM/LARGE), plans, builds and runs a team (subagents or spawn_helper panes), and coordinates review and testing. Use when the user wants the task dashboard, to check the board or resume the PM workflow, describes a new feature or multi-step change to plan, or says "you are the PM", "act as project manager", "build a team", "spawn helpers". /session-start routes a project terminal's Continue, New task and Pick a task here; never load it before that menu is answered. For a batch of 2+ tickets, see program-management.
+version: 6.1.1
 ---
 
 # Project Management - Orchestration Skill
