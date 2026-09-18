@@ -1,6 +1,6 @@
 # Native modules must be stored verbatim — never apply EOL/text conversion (issue #7).
 *.node binary
 
-# Shell scripts must stay LF: a CRLF checkout makes every line end in , and the shell reports
+# Shell scripts must stay LF: a CRLF checkout makes every line end in a stray carriage return, and the shell reports
 # it as "command not found" on a line that looks correct (ticket 90cc3d33).
 *.sh text eol=lf
