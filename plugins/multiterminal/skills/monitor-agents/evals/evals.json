@@ -1,0 +1,101 @@
+{
+  "skill": "monitor-agents",
+  "cases": [
+    {
+      "name": "trigger-watch-named-agent",
+      "category": "trigger",
+      "priority": "P0",
+      "prompt": "Diana's running that ticket with two helpers. Keep an eye on it and tell me when something happens.",
+      "should_trigger": true,
+      "description": "The plain request this skill exists for",
+      "assertions": [
+        "Skill activates",
+        "Agrees the report triggers and a stop condition BEFORE the first round",
+        "Does not message Diana or her helpers"
+      ]
+    },
+    {
+      "name": "trigger-tell-me-when-done",
+      "category": "trigger",
+      "priority": "P0",
+      "prompt": "let me know when the helper finishes, I don't want to sit and watch the pane",
+      "should_trigger": true,
+      "description": "Monitoring asked for as a single trigger rather than a running commentary",
+      "assertions": [
+        "Skill activates and treats 'helper finishes' as the only trigger",
+        "Quiet rounds report one line, not a summary"
+      ]
+    },
+    {
+      "name": "trigger-what-is-that-terminal-doing",
+      "category": "trigger",
+      "priority": "P1",
+      "prompt": "what has Nadia been doing for the last half hour?",
+      "should_trigger": true,
+      "description": "A one-off read of another agent's run — the same mechanism, one round",
+      "assertions": [
+        "Reads the transcript rather than messaging Nadia",
+        "Does not set up a loop for a one-off question"
+      ]
+    },
+    {
+      "name": "no-trigger-ask-the-agent",
+      "category": "no-trigger",
+      "priority": "P0",
+      "prompt": "ask Diana whether she's merged that branch yet",
+      "should_trigger": false,
+      "description": "An explicit instruction to MESSAGE another agent. That is send_message, and it is the one thing a monitor never does — the skill must not capture it",
+      "assertions": [
+        "Skill does not activate",
+        "Sends the message as asked"
+      ]
+    },
+    {
+      "name": "no-trigger-review-the-code",
+      "category": "no-trigger",
+      "priority": "P1",
+      "prompt": "review the changes on task/50414e39 and tell me if they're any good",
+      "should_trigger": false,
+      "description": "Reviewing is a judgement about code; monitoring is a report about a run. Different job (pipeline / code-reviewer)",
+      "assertions": [
+        "Skill does not activate"
+      ]
+    },
+    {
+      "name": "no-trigger-run-the-work-yourself",
+      "category": "no-trigger",
+      "priority": "P1",
+      "prompt": "take over that ticket and finish it",
+      "should_trigger": false,
+      "description": "Taking over is the opposite of monitoring: from then on the run is one the agent is changing",
+      "assertions": [
+        "Skill does not activate",
+        "If the agent was monitoring, it says it has stopped before starting work"
+      ]
+    },
+    {
+      "name": "behaviour-find-by-session-id",
+      "category": "behaviour",
+      "priority": "P0",
+      "prompt": "keep watching Iris — she just moved into a different worktree",
+      "should_trigger": true,
+      "description": "The transcript's DIRECTORY is derived from the agent's working directory, so it moves with a worktree switch while the session id does not",
+      "assertions": [
+        "Re-resolves the transcript by session id rather than a remembered path",
+        "Does not report 'no change' merely because the old path went quiet"
+      ]
+    },
+    {
+      "name": "behaviour-report-evidence-not-claims",
+      "category": "behaviour",
+      "priority": "P1",
+      "prompt": "she says the branch is merged and pushed — is it?",
+      "should_trigger": true,
+      "description": "A 'done' message is a claim; the branch and the remote are the evidence",
+      "assertions": [
+        "Checks git (log / branch --merged / remote) rather than quoting the agent's summary",
+        "States plainly which parts were verified and which were not"
+      ]
+    }
+  ]
+}
