@@ -1,0 +1,46 @@
+# Runs the plugin's hook unit tests (ticket 0ff1b520, item 3).
+#
+# WHY THIS REPO NEEDED CI AT ALL: this repository had none. The hooks here run inside every
+# MultiTerminal terminal at session start — they talk to SQLite, POST to a local REST API, and
+# now handle a credential that authorises writing messages into a live Claude session. There
+# were seventeen unit tests covering that code and nothing that ran them.
+#
+# MultiTerminal's own CI (.github/workflows/ci.yml in the MultiTerminal repo) covers the C#
+# app only. Nothing syncs these two repositories, so a hook change gets no gate from there.
+# That gap is what this file closes.
+#
+# Deliberately minimal: the tests use node:assert with no dependencies and there is no
+# package.json, so there is nothing to install and nothing to cache.
+name: hook tests
+
+on:
+  push:
+    branches: [main, 'task/**']
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  unit:
+    # windows-latest, matching MultiTerminal's own CI and for the same reason: these hooks only
+    # ever run on Windows. They resolve better-sqlite3 through ./_sqlite.js and build paths from
+    # %APPDATA%, and the credential test pins a \\.\pipe\LOCAL\ socket shape. A green Linux run
+    # would be testing a platform this code never executes on, which is worse than no run —
+    # it would read as coverage.
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - uses: actions/setup-node@39370e3970a6d050c480ffad4ff0ed4d3fdee5af # v4.1.0
+        with:
+          node-version: '20'
+
+      - name: Log toolchain version
+        run: node --version
+
+      # The runner itself fails when it finds no tests, so a glob that silently stops matching
+      # cannot pass as "0 failures". See the refusal in run-all.js.
+      - name: Hook unit tests
+        run: node plugins/multiterminal/hooks/dispatch-test/run-all.js

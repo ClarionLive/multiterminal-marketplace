@@ -524,6 +524,113 @@ function probeSpawnJobStatus(docId, timeoutMs = 2000) {
   });
 }
 
+/**
+ * Claude Code's cross-session messaging ingress, read out of the session environment
+ * (ticket 0ff1b520, item 3). The CLI sets CLAUDE_CODE_MESSAGING_SOCKET and
+ * CLAUDE_CODE_MESSAGING_TOKEN in each session's env and child processes inherit them —
+ * the only reason a hook can see them at all.
+ *
+ * THE TOKEN IS A CREDENTIAL, NOT DATA. It authorises writing a user-role message into a live
+ * session. Nothing here logs either value, and callers must preserve that: credential dtrace
+ * lines carry presence and length ONLY. That property is asserted rather than promised —
+ * unit-messaging-credentials.js runs this with a sentinel token and fails if the sentinel
+ * reaches stdout, stderr or the dtrace file.
+ *
+ * REFUSE, DON'T REPAIR. A value that does not look like what the CLI emits is dropped whole,
+ * never trimmed, padded or partially accepted. A half-understood credential posted onward
+ * would fail later at the pipe, several components away, and read as a messaging bug rather
+ * than as a malformed environment. Same posture ConPtyTerminal.ApplySessionName takes toward
+ * malformed terminal names (same ticket, item 1).
+ *
+ * The shape check is strict BUT TRACED on purpose: this wire format is observed, not
+ * published. If a CLI upgrade changes it, this refuses and says so in one dtrace line. A
+ * loose check would instead keep "succeeding" while posting junk.
+ *
+ * Returns { socket, token } when BOTH are present and well-formed, else null. Never throws.
+ */
+function messagingCredentials(env) {
+  try {
+    if (!env || typeof env !== 'object') return null;
+
+    const socket = env.CLAUDE_CODE_MESSAGING_SOCKET;
+    const token = env.CLAUDE_CODE_MESSAGING_TOKEN;
+
+    if (typeof socket !== 'string' || typeof token !== 'string') return null;
+    if (!socket || !token) return null;
+
+    // Observed 2026-09-21: \\.\pipe\LOCAL\cc-msg-<32 hex>, 54 chars. The hex run is not pinned
+    // to exactly 32 — that would over-fit one observation — but the namespace and prefix are,
+    // because those carry the meaning. \\.\pipe\LOCAL\ is the LOCAL namespace, which is also
+    // why broker push cannot cross machines at all (same ticket, item 0).
+    if (!/^\\\\\.\\pipe\\LOCAL\\cc-msg-[0-9a-f]{16,}$/i.test(socket)) {
+      dtrace(`messaging: socket present but shape not recognised (len=${socket.length}) — refusing, not repairing`);
+      return null;
+    }
+
+    // The token's ALPHABET is deliberately not pinned: guessing it risks refusing a valid
+    // credential after a CLI change, which fails closed in the silent direction. What is
+    // pinned is the property actually needed — printable, no whitespace or control chars,
+    // plausible length — so a newline can never smuggle an extra line into a JSON payload,
+    // a log file or the two-line pipe handshake itself.
+    if (!/^[\x21-\x7e]{16,256}$/.test(token)) {
+      dtrace(`messaging: token present but shape not recognised (len=${token.length}) — refusing, not repairing`);
+      return null;
+    }
+
+    return { socket, token };
+  } catch (_e) {
+    return null;
+  }
+}
+
+/**
+ * Hands the ingress credentials to MT's broker (ticket 0ff1b520, item 3).
+ *
+ * Follows the house pattern for hook→API calls: raw http.request, no dependency, handlers for
+ * BOTH 'error' and 'timeout', a settled guard so nothing double-resolves, and a short timeout.
+ * A hook must never block or break session startup because MT happens to be down.
+ *
+ * The broker holds these IN MEMORY ONLY and never persists them (Owner decision, 2026-09-21):
+ * MT hosts the terminals, so an MT restart kills every session these belong to. Persisting
+ * would leave a live injection secret at rest to buy a value that is stale on arrival.
+ *
+ * Resolves true on a 200, false on anything else. Never throws, never logs the token.
+ */
+function postMessagingCredentials(terminalName, sessionId, creds, timeoutMs = 3000) {
+  return new Promise((resolve) => {
+    let settled = false;
+    const done = (value) => { if (!settled) { settled = true; resolve(value); } };
+    try {
+      if (!terminalName || !creds) { done(false); return; }
+      const http = require('http');
+      const postData = JSON.stringify({
+        name: terminalName,
+        sessionId: sessionId || '',
+        socket: creds.socket,
+        token: creds.token,
+      });
+      const req = http.request({
+        hostname: 'localhost',
+        port: 5050,
+        path: '/api/messaging/credentials',
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(postData) },
+        timeout: timeoutMs,
+      }, (res) => {
+        res.on('data', () => {});
+        res.on('end', () => done(res.statusCode === 200));
+        res.on('error', () => done(false));
+      });
+      req.on('error', () => done(false));
+      req.on('timeout', () => { req.destroy(); done(false); });
+      req.write(postData);
+      req.end();
+    } catch (_e) {
+      done(false);
+    }
+  });
+}
+
 async function main() {
   let input = '';
   for await (const chunk of process.stdin) {
@@ -578,6 +685,18 @@ async function main() {
       const sessionId = hookData.session_id;
       updateSessionAgentMap(sessionId, terminalName, true);
       dtrace('STEP 3: updateSessionAgentMap done');
+
+      // Ticket 0ff1b520 item 3: hand this session's native messaging ingress to the broker, so
+      // MT can deliver to a session directly instead of through the development channel.
+      // Presence and length only in the trace — never the values. Failure is non-fatal by
+      // design: a terminal whose credentials never arrive simply keeps the existing paths.
+      const creds = messagingCredentials(process.env);
+      if (creds) {
+        const posted = await postMessagingCredentials(terminalName, sessionId, creds);
+        dtrace(`STEP 3c: messaging credentials present (socket len=${creds.socket.length}, token len=${creds.token.length}), posted=${posted}`);
+      } else {
+        dtrace('STEP 3c: no usable messaging credentials in env — skipping');
+      }
 
       // Skip kanban/plan context for spawned agents (they have specific tasks from spawner)
       // But NOT on /clear — user explicitly wants a fresh start with session-start menu
@@ -888,4 +1007,4 @@ if (require.main === module) {
   });
 }
 
-module.exports = { resolveHookProjectId, projectManagerRoleLines };
+module.exports = { resolveHookProjectId, projectManagerRoleLines, messagingCredentials };
