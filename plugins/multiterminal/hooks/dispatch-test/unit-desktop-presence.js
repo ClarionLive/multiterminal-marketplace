@@ -29,7 +29,38 @@ async function main() {
   const r = await run({ prompt: 'x' }, { postRemoteModeOff: postSpy });
   assert.strictEqual(r.exitCode, 0, 'returns exitCode 0');
 
-  console.log('desktop-presence run() unit: PASS (4 assertions)');
+  // ── Native session injection (ticket 0ff1b520 item 4) ──────────────────
+  //
+  // These exist because the four assertions ABOVE were all green throughout a
+  // real, live failure. Item 4 moved messages onto a named pipe, where they
+  // arrive with NO <channel> tag, and this file only ever tested the tag — so a
+  // phone message looked exactly like keyboard input, the hook flipped remote
+  // mode off on the very message that had just armed it, and the Owner's reply
+  // silently never left the desktop. A passing suite said nothing about it.
+  //
+  // Falsified before being trusted: reverting the marker to the channel-only
+  // regex turns BOTH of the next two assertions red, and no other assertion in
+  // this file changes.
+  await run({ prompt: '[MultiTerminal message from MultiRemote]\n\nHi this is from my phone!' },
+    { postRemoteModeOff: postSpy });
+  assert.strictEqual(posted, 3, 'native-injected → NO post');
+
+  // The harness prepends its own framing line, so the wrapper is NOT always at
+  // offset 0. Pinned separately because a marker anchored with /^...$/ and no
+  // `m` flag passes the assertion above and fails this one — which is the real
+  // delivery shape.
+  await run({ prompt: 'Another Claude session sent a message:\n[MultiTerminal message from MultiRemote]\n\nHi' },
+    { postRemoteModeOff: postSpy });
+  assert.strictEqual(posted, 3, 'native-injected behind harness framing → NO post');
+
+  // Guards the other direction: the fix must not make the hook inert. A marker
+  // broad enough to swallow ordinary typing would leave every assertion above
+  // green while remote mode simply never switched off again.
+  await run({ prompt: 'can you check the MultiTerminal message from earlier?' },
+    { postRemoteModeOff: postSpy });
+  assert.strictEqual(posted, 4, 'prose merely MENTIONING the wrapper is still desktop typing');
+
+  console.log('desktop-presence run() unit: PASS (7 assertions)');
 }
 
 main().catch((e) => { console.error(e); process.exit(1); });
