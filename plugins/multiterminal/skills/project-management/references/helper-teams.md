@@ -93,8 +93,10 @@ A helper that activates a task works in **its own per-agent worktree** (`task/<i
 
 ## Shutting down
 
-**No MCP tool or REST route closes a helper's pane.** Only the Owner can.
+**Close your own helpers with `close_helper(terminalName)`** (task 7f389704). It closes the pane exactly as the Owner clicking its tab's X would: the helper's process ends at once, with no chance to finish or save.
 
-1. Before asking, check that the helper's work is committed and its items carry completion reports. Anything left only in its session is lost when the pane closes.
+1. Before closing, check that the helper's work is committed and its items carry completion reports. Anything left only in its session is lost when the pane closes.
 2. Tell the helper it is finished, so it stops waiting for messages.
-3. Ask the Owner to close the panes, naming each helper.
+3. Call `close_helper` with each helper's `terminalName` from the spawn result.
+
+MultiTerminal allows the close only from **the pane that spawned the helper**, checked by that pane's launch nonce and not by any name. So you cannot close another agent's helper, a terminal the Owner opened, or yourself. Two cases still need the Owner: a helper spawned before MultiTerminal last restarted, and one whose spawn result said close_helper could not close it (for example, spawned from the phone app). If `close_helper` is not in your tools, this MultiTerminal predates it; ask the Owner to close the panes, naming each helper.
