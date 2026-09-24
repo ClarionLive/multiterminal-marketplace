@@ -29,26 +29,41 @@
 // sits in COMMAND POSITION once quoted text is removed.
 //
 // This guards against accidents, not evasion: a kill hidden inside "$(...)"
-// within double quotes is not seen. The one nested case that is common by
-// accident — handing a command string to another shell, e.g.
+// within double quotes is not seen, and neither is one run through a wrapper
+// this file does not list. The one nested case that is common by accident —
+// handing a command string to another shell, e.g.
 //   powershell -Command "Stop-Process -Name MultiTerminal"
 // — falls back to the old match-the-word-anywhere check, because the words
 // inside that string are a command, and this hook cannot parse them.
 
 const KILL_WORD = /\b(taskkill|kill|pkill|killall|Stop-Process|spps)\b/i;
 
-// A kill command at the start of the line or after a separator (; & | ( { `
-// newline or $( ), optionally behind sudo/nohup/xargs-style wrappers and a path.
-const KILL_IN_COMMAND_POSITION = new RegExp(
-  '(?:^|[;&|({`\\n]|\\$\\()\\s*' +
-  '(?:(?:sudo|nohup|exec|command|time|env|xargs)(?:\\s+-\\S+)*\\s+)*' +
-  '(?:\\S*[\\\\/])?' +
-  '(?:taskkill|kill|pkill|killall|Stop-Process|spps)(?:\\.exe)?\\b',
-  'i'
-);
+// Where a command can start: the beginning, a separator (; & | ( { ` ! newline
+// $( ), a shell keyword (do then else elif), or find's -exec family.
+const COMMAND_START =
+  String.raw`(?:^|[;&|({!\n` + '`' + String.raw`]|\$\(|(?:^|\s)(?:do|then|else|elif|-exec|-execdir|-ok|-okdir)(?=\s))\s*`;
 
-// A command that hands a string to another interpreter to run.
-const NESTED_SHELL = /\b(powershell|pwsh|cmd|bash|sh|zsh|wsl|Invoke-Expression|iex|Start-Process)(\.exe)?\b/i;
+// What may sit in front of the command itself: VAR=val assignments, and
+// wrappers that run the next word as a command, each with its own flags
+// (a flag may take one value), numbers and VAR=val arguments. The three
+// argument shapes are kept disjoint so a long command cannot backtrack.
+const COMMAND_PREFIX =
+  String.raw`(?:(?:\w+=\S*|(?:sudo|doas|nohup|exec|command|builtin|time|env|xargs|timeout|nice|ionice|watch|stdbuf|setsid)` +
+  String.raw`(?:\s+(?:-\S+(?:\s+[^\s\d=-][^\s=]*)?|\d\S*|\w+=\S*))*)\s+)*`;
+
+// A path in front of the executable, and the end of the word after it.
+const COMMAND_PATH = String.raw`(?:\S*[\\/])?`;
+const COMMAND_END = String.raw`(?:\.exe)?(?=\s|$|[;&|)}` + '`' + '])';
+
+function commandInPosition(words) {
+  return new RegExp(COMMAND_START + COMMAND_PREFIX + COMMAND_PATH + `(?:${words})` + COMMAND_END, 'i');
+}
+
+const KILL_COMMAND = commandInPosition('taskkill|kill|pkill|killall|Stop-Process|spps');
+
+// A command that hands a string to another interpreter to run. It must be in
+// command position too, or "grep kill scripts/*.sh" would count as running sh.
+const NESTED_SHELL = commandInPosition('powershell|pwsh|cmd|bash|sh|zsh|wsl|Invoke-Expression|iex|Start-Process');
 
 /**
  * Returns the command with the contents of '...' and "..." removed, so a
@@ -75,7 +90,7 @@ function stripQuoted(command) {
 
 function isProcessKill(command) {
   const unquoted = stripQuoted(command);
-  if (KILL_IN_COMMAND_POSITION.test(unquoted)) return true;
+  if (KILL_COMMAND.test(unquoted)) return true;
   return NESTED_SHELL.test(unquoted) && KILL_WORD.test(command);
 }
 

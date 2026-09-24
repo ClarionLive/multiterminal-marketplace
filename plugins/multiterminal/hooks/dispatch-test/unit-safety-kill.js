@@ -11,6 +11,7 @@
  * Unlike its siblings, this file collects every failing case before exiting,
  * so a mutation run reports exactly which cases went red instead of the first.
  */
+const { spawnSync } = require('child_process');
 const { run } = require('../safety-hook.js');
 
 const KILL_REASON = 'Process termination detected';
@@ -35,7 +36,13 @@ const MENTIONS = [
   // A separator INSIDE the quotes puts the word in command position; only the
   // quote-stripping keeps these silent.
   'git commit -m "Retry once; kill the stale helper after"',
+  'echo "cleanup | taskkill /F later"',
+  // Here the end-of-word rule (a quote is not a word end) already keeps it silent.
   "echo 'ps | pkill'",
+  // "sh" and "cmd" as parts of a path are not another shell being run.
+  'grep -n kill scripts/*.sh',
+  'grep -rn kill src/cmd/',
+  'cat kill.sh',
 ];
 
 // Kills that are run: MUST raise the kill prompt.
@@ -52,6 +59,21 @@ const KILLS = [
   '(kill 1)',
   'echo $(pkill x)',
   'echo a\nkill 5',
+  // Shell keywords and find -exec start a command too (run-1 verifier finding).
+  'for p in $(pgrep node); do kill $p; done',
+  'while read p; do kill -9 "$p"; done < pids',
+  'if true; then kill 1; fi',
+  'if false; then :; else pkill x; fi',
+  '! kill 1',
+  'find . -name x -exec kill {} \\;',
+  // Wrappers with positional arguments, flag values, and VAR=val prefixes.
+  'timeout 5 kill 1',
+  'nice -n 5 pkill x',
+  'sudo -u root kill 1',
+  'env FOO=1 kill 1',
+  'x=1 kill 1',
+  'watch -n 1 killall node',
+  'xargs sh -c "kill $0"',
   // Nested shells: the quoted text is itself a command, so it is still checked.
   'powershell -Command "Stop-Process -Name MultiTerminal"',
   "pwsh -c 'Get-Process x | Stop-Process'",
@@ -82,6 +104,22 @@ if (decisionFor('git add -A').decision !== 'deny') failures.push('git add -A is 
 checked++;
 if (!decisionFor('reg add HKCU\\Software\\X').reason.startsWith('Windows registry')) {
   failures.push('reg add no longer asks');
+}
+
+// The hook runs before every Bash call, so a long command must not make the
+// regex backtrack. 300 wrapper-argument groups that never reach a kill. If the
+// argument shapes in COMMAND_PREFIX are allowed to overlap, the check time grows
+// exponentially and would never return — so it runs in a child process with a
+// hard limit, and a regression fails this test instead of hanging the suite.
+checked++;
+{
+  const long = 'sudo' + ' -n 5 -u x FOO=1'.repeat(300) + ' echo done';
+  const probe = `require(${JSON.stringify(require.resolve('../safety-hook.js'))})` +
+    `.run({ tool_name: 'Bash', tool_input: { command: ${JSON.stringify(long)} } });`;
+  const result = spawnSync(process.execPath, ['-e', probe], { timeout: 5000 });
+  if (result.error || result.status !== 0) {
+    failures.push(`a long wrapper command did not finish checking within 5 s (${result.error ? result.error.code : 'exit ' + result.status})`);
+  }
 }
 
 if (failures.length > 0) {
