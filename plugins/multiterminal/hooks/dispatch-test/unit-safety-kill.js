@@ -43,6 +43,9 @@ const MENTIONS = [
   'grep -n kill scripts/*.sh',
   'grep -rn kill src/cmd/',
   'cat kill.sh',
+  // An interpreter running a FILE is not inline code.
+  'node scripts/test.js --grep kill',
+  'npm test -- --grep kill',
 ];
 
 // Kills that are run: MUST raise the kill prompt.
@@ -74,6 +77,16 @@ const KILLS = [
   'x=1 kill 1',
   'watch -n 1 killall node',
   'xargs sh -c "kill $0"',
+  // Packaged killers, run directly or through a package runner (run-2 finding;
+  // 5050 is MultiTerminal's own REST port).
+  'npx kill-port 5050',
+  'kill-port 5050',
+  'npx -y kill-port 5050',
+  'bunx fkill node',
+  // An interpreter running inline code is a nested command too (run-2 finding).
+  'node -e "process.kill(12345)"',
+  'node --eval "process.kill(1)"',
+  "ruby -e 'Process.kill(9, 1)'",
   // Nested shells: the quoted text is itself a command, so it is still checked.
   'powershell -Command "Stop-Process -Name MultiTerminal"',
   "pwsh -c 'Get-Process x | Stop-Process'",

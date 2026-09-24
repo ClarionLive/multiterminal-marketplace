@@ -35,8 +35,12 @@
 //   powershell -Command "Stop-Process -Name MultiTerminal"
 // — falls back to the old match-the-word-anywhere check, because the words
 // inside that string are a command, and this hook cannot parse them.
+//
+// Still asks needlessly (as the old rule did): a heredoc body with a line that
+// starts with a kill word, and `bash script.sh | grep kill`, where running a
+// shell triggers the fallback although the kill word is only grep's pattern.
 
-const KILL_WORD = /\b(taskkill|kill|pkill|killall|Stop-Process|spps)\b/i;
+const KILL_WORD = /\b(taskkill|kill|pkill|killall|fkill|Stop-Process|spps)\b/i;
 
 // Where a command can start: the beginning, a separator (; & | ( { ` ! newline
 // $( ), a shell keyword (do then else elif), or find's -exec family.
@@ -48,7 +52,7 @@ const COMMAND_START =
 // (a flag may take one value), numbers and VAR=val arguments. The three
 // argument shapes are kept disjoint so a long command cannot backtrack.
 const COMMAND_PREFIX =
-  String.raw`(?:(?:\w+=\S*|(?:sudo|doas|nohup|exec|command|builtin|time|env|xargs|timeout|nice|ionice|watch|stdbuf|setsid)` +
+  String.raw`(?:(?:\w+=\S*|(?:sudo|doas|nohup|exec|command|builtin|time|env|xargs|timeout|nice|ionice|watch|stdbuf|setsid|npx|bunx)` +
   String.raw`(?:\s+(?:-\S+(?:\s+[^\s\d=-][^\s=]*)?|\d\S*|\w+=\S*))*)\s+)*`;
 
 // A path in front of the executable, and the end of the word after it.
@@ -59,11 +63,22 @@ function commandInPosition(words) {
   return new RegExp(COMMAND_START + COMMAND_PREFIX + COMMAND_PATH + `(?:${words})` + COMMAND_END, 'i');
 }
 
-const KILL_COMMAND = commandInPosition('taskkill|kill|pkill|killall|Stop-Process|spps');
+// kill-port and fkill are npm packages that kill by port or name; `npx kill-port
+// 5050` would take down MultiTerminal's own REST server.
+const KILL_COMMAND = commandInPosition('taskkill|kill|pkill|killall|kill-port|fkill|Stop-Process|spps');
 
 // A command that hands a string to another interpreter to run. It must be in
 // command position too, or "grep kill scripts/*.sh" would count as running sh.
 const NESTED_SHELL = commandInPosition('powershell|pwsh|cmd|bash|sh|zsh|wsl|Invoke-Expression|iex|Start-Process');
+
+// A language runtime given inline code (node -e, python -c, ...), which is a
+// nested command in the same way. Only flags may come before the inline-code
+// flag, so `node scripts/test.js --grep kill` runs a file and does not count.
+const INLINE_CODE = new RegExp(
+  COMMAND_START + COMMAND_PREFIX + COMMAND_PATH +
+  String.raw`(?:node|deno|python[23]?|py|perl|ruby|php)(?:\.exe)?(?:\s+-\S+)*?\s+(?:-e|--eval|-p|--print|-c|-r)(?=\s|$)`,
+  'i'
+);
 
 /**
  * Returns the command with the contents of '...' and "..." removed, so a
@@ -91,7 +106,7 @@ function stripQuoted(command) {
 function isProcessKill(command) {
   const unquoted = stripQuoted(command);
   if (KILL_COMMAND.test(unquoted)) return true;
-  return NESTED_SHELL.test(unquoted) && KILL_WORD.test(command);
+  return (NESTED_SHELL.test(unquoted) || INLINE_CODE.test(unquoted)) && KILL_WORD.test(command);
 }
 
 // ── Rule Definitions ────────────────────────────────────────────────
