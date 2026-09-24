@@ -20,11 +20,71 @@
  * Performance: Pure pattern matching, no HTTP or disk I/O. Target < 50ms.
  */
 
+// ── Process-kill detection (ticket 24a72aa1) ────────────────────────
+//
+// The kill rule used to match the word anywhere in the command, so
+//   grep -n '"quit"\|"kill"' *.cs
+// stopped a helper on a confirmation prompt until the Owner answered it — a
+// hook's "ask" overrides bypass mode. It now asks only when a kill command
+// sits in COMMAND POSITION once quoted text is removed.
+//
+// This guards against accidents, not evasion: a kill hidden inside "$(...)"
+// within double quotes is not seen. The one nested case that is common by
+// accident — handing a command string to another shell, e.g.
+//   powershell -Command "Stop-Process -Name MultiTerminal"
+// — falls back to the old match-the-word-anywhere check, because the words
+// inside that string are a command, and this hook cannot parse them.
+
+const KILL_WORD = /\b(taskkill|kill|pkill|killall|Stop-Process|spps)\b/i;
+
+// A kill command at the start of the line or after a separator (; & | ( { `
+// newline or $( ), optionally behind sudo/nohup/xargs-style wrappers and a path.
+const KILL_IN_COMMAND_POSITION = new RegExp(
+  '(?:^|[;&|({`\\n]|\\$\\()\\s*' +
+  '(?:(?:sudo|nohup|exec|command|time|env|xargs)(?:\\s+-\\S+)*\\s+)*' +
+  '(?:\\S*[\\\\/])?' +
+  '(?:taskkill|kill|pkill|killall|Stop-Process|spps)(?:\\.exe)?\\b',
+  'i'
+);
+
+// A command that hands a string to another interpreter to run.
+const NESTED_SHELL = /\b(powershell|pwsh|cmd|bash|sh|zsh|wsl|Invoke-Expression|iex|Start-Process)(\.exe)?\b/i;
+
+/**
+ * Returns the command with the contents of '...' and "..." removed, so a
+ * rule can see what the command runs rather than what it mentions. Quotes
+ * are kept (empty) so the surrounding structure stays intact. Backslash
+ * escapes are honoured outside quotes and inside double quotes, as in bash.
+ */
+function stripQuoted(command) {
+  let out = '';
+  let quote = null;
+  for (let i = 0; i < command.length; i++) {
+    const c = command[i];
+    if (quote) {
+      if (quote === '"' && c === '\\') { i++; continue; }
+      if (c === quote) { quote = null; out += c; }
+      continue;
+    }
+    if (c === '\\') { out += c + (command[i + 1] || ''); i++; continue; }
+    if (c === "'" || c === '"') quote = c;
+    out += c;
+  }
+  return out;
+}
+
+function isProcessKill(command) {
+  const unquoted = stripQuoted(command);
+  if (KILL_IN_COMMAND_POSITION.test(unquoted)) return true;
+  return NESTED_SHELL.test(unquoted) && KILL_WORD.test(command);
+}
+
 // ── Rule Definitions ────────────────────────────────────────────────
 
 /**
  * Bash command rules. Checked in order; first match wins.
- * pattern: regex tested against the full command string.
+ * pattern: regex tested against the full command string, OR
+ * test:    a function (command) => boolean, for a rule a regex cannot express.
  * action:  "deny" or "ask".
  * reason:  shown to the agent (and user, for "ask").
  */
@@ -150,9 +210,11 @@ const BASH_RULES = [
     action: 'ask',
     reason: 'git branch -D force-deletes a branch even if unmerged. Are you sure?'
   },
-  // Gate process killing — could take down MultiTerminal or other critical apps
+  // Gate process killing — could take down MultiTerminal or other critical apps.
+  // Matches a kill that is RUN, not the word appearing in a grep pattern or a
+  // message (ticket 24a72aa1); see isProcessKill below.
   {
-    pattern: /\b(taskkill|kill|Stop-Process|stop-process)\b/i,
+    test: isProcessKill,
     action: 'ask',
     reason: 'Process termination detected. This could kill MultiTerminal or other running apps. Are you sure?'
   },
@@ -294,7 +356,7 @@ function ask(reason) {
 function checkBash(command) {
   if (!command) return null;
   for (const rule of BASH_RULES) {
-    if (rule.pattern.test(command)) {
+    if (rule.test ? rule.test(command) : rule.pattern.test(command)) {
       return rule.action === 'deny' ? deny(rule.reason) : ask(rule.reason);
     }
   }
