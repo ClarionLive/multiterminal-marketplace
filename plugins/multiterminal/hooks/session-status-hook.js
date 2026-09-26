@@ -530,8 +530,10 @@ function probeSpawnJobStatus(docId, timeoutMs = 2000) {
 // time. This hook already runs at startup and knows the identity, so it asks MT for those facts in
 // parallel and prints them as one block the skill can greet from directly.
 //
-// Bounds: each call gets PREFETCH_CALL_TIMEOUT_MS and the whole fan-out a hard PREFETCH_DEADLINE_MS,
-// well inside the 10 s hooks.json timeout. A call that has not answered by then is reported as
+// Bounds: each GET gets PREFETCH_CALL_TIMEOUT_MS and the whole fan-out a hard PREFETCH_DEADLINE_MS,
+// well inside the 10 s hooks.json timeout. The register_session POST alone may use the whole deadline:
+// it runs the worktree janitor scans and takes about 2 s, and an unconfirmed registration is printed
+// as registered=no, which costs the skill a register_session call. A call that has not answered by then is reported as
 // unknown, never guessed. It never calls ensure-ready (that is the slow path get_latest_session
 // takes), and it does not register the terminal: the MCP server does that, because the terminal's
 // ownerPid feeds the liveness reaper and this hook's parent may not be claude.exe.
@@ -625,7 +627,7 @@ async function buildStartupPrefetchBlock(ctx, deps = {}) {
   const answers = {};
   const pending = Object.entries(calls).filter(([, c]) => c).map(([key, [method, urlPath, body]]) =>
     Promise.resolve()
-      .then(() => request(method, urlPath, body, callTimeoutMs))
+      .then(() => request(method, urlPath, body, key === 'register' ? deadlineMs : callTimeoutMs))
       .then((res) => { answers[key] = res; }));
   let deadlineTimer;
   const deadline = new Promise((resolve) => { deadlineTimer = setTimeout(resolve, deadlineMs); });

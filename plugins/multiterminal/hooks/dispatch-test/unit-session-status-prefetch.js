@@ -97,12 +97,12 @@ async function main() {
     assert.ok(!block.includes('unknown'), 'nothing is unknown when every call answered');
   });
 
-  await test('the calls: scoped, 1.5 s each, register_session body, never ensure-ready or register_terminal', async () => {
+  await test('the calls: scoped, GETs 1.5 s, register up to the 2.5 s deadline, register_session body, no ensure-ready or register_terminal', async () => {
     const s = stub();
     await run(ctx(), s);
     assert.deepStrictEqual(s.calls.map((c) => c.key).sort(), ['active', 'latest', 'register', 'remote', 'worktree']);
     for (const c of s.calls) {
-      assert.strictEqual(c.timeoutMs, 1500, `${c.key} timeout`);
+      assert.strictEqual(c.timeoutMs, c.key === 'register' ? 2500 : 1500, `${c.key} timeout`);
       assert.ok(!c.urlPath.includes('ensure-ready'), `${c.key} must not call ensure-ready`);
     }
     const byKey = Object.fromEntries(s.calls.map((c) => [c.key, c]));
@@ -172,6 +172,16 @@ async function main() {
     assert.strictEqual(field(block, 'PREFETCH'), 'partial');
     assert.strictEqual(field(block, 'worktree'), 'unknown');
     assert.strictEqual(field(block, 'remote_mode'), 'off');
+  });
+
+  await test('a register_session that answers after 2 s, past the GET timeout, is still confirmed', async () => {
+    const slowRegister = () => new Promise((resolve) => setTimeout(() => resolve(ANSWERS.register), 2000));
+    const s = stub();
+    const request = (method, urlPath, body, timeoutMs) =>
+      (urlPath === '/api/session-lineage/register' ? (s.request(method, urlPath, body, timeoutMs), slowRegister()) : s.request(method, urlPath, body, timeoutMs));
+    const block = await buildStartupPrefetchBlock(ctx(), { request, now: () => NOW });
+    assert.strictEqual(field(block, 'registered'), 'yes');
+    assert.strictEqual(field(block, 'PREFETCH'), 'ok');
   });
 
   await test('the real 2.5 s deadline holds when nothing ever answers', async () => {
