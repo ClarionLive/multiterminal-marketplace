@@ -635,7 +635,12 @@ async function buildStartupPrefetchBlock(ctx, deps = {}) {
   clearTimeout(deadlineTimer);
   const answered = Object.keys(answers).length;
 
-  const ok = (key) => answers[key] && answers[key].status >= 200 && answers[key].status < 300 ? answers[key].json || {} : null;
+  // A 2xx counts only with a JSON object body. A 200 that is not JSON (a proxy page, a truncated
+  // response) says nothing about the facts, so it must read as unknown, never as none.
+  const ok = (key) => {
+    const a = answers[key];
+    return a && a.status >= 200 && a.status < 300 && a.json && typeof a.json === 'object' ? a.json : null;
+  };
   const facts = {};
 
   const remote = ok('remote');
@@ -721,11 +726,17 @@ async function buildStartupPrefetchBlock(ctx, deps = {}) {
   // The field caps keep even the worst case under the limit, so this should never run. If it does,
   // it gives up whole values, longest first, and marks them unknown: that makes the block partial and
   // tells the skill exactly what to fetch, where cutting text would leave ok over a missing line.
+  // Only values step 0 knows how to handle when unknown are candidates: the three it fetches
+  // (previous_summary, active_task, project_name), continue_option (built as step 4 says) and
+  // worktree (step 2.5 runs after the choice).
+  const GIVE_UP_ORDER = ['previous_summary', 'active_task', 'project_name', 'continue_option', 'worktree'];
   let block = render();
   while (Buffer.byteLength(block) > maxBytes) {
-    const longest = Object.keys(facts)
-      .filter((k) => facts[k] !== 'unknown' && facts[k] !== 'none')
+    const longest = GIVE_UP_ORDER
+      .filter((k) => k in facts && facts[k] !== 'unknown' && facts[k] !== 'none' && facts[k] !== 'pending')
       .sort((a, b) => Buffer.byteLength(facts[b]) - Buffer.byteLength(facts[a]))[0];
+    // Last resort, unreachable with the current caps: nothing left to give up, so print only the
+    // header lines and tell the skill to run its normal flow, rather than a block over the limit.
     if (!longest) return render().split('\n').slice(0, 4).join('\n').replace(/^PREFETCH=.*$/m, 'PREFETCH=unavailable');
     facts[longest] = 'unknown';
     block = render();

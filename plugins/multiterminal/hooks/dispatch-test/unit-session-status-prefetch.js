@@ -266,6 +266,33 @@ async function main() {
     assert.strictEqual(field(block, 'registered'), 'yes');
   });
 
+  await test('the byte cap only gives up values step 0 can handle as unknown', async () => {
+    // checklist is the longest value here, but step 0 has no way to fetch it, so it must survive.
+    const big = 1000000;
+    const s = stub({
+      active: {
+        status: 200,
+        json: {
+          task: { id: '54005ee7', title: 'A PM terminal is ready in a few seconds' },
+          checklistSummary: { total: big, done: big, coding: big, testing: big, pending: big },
+        },
+      },
+    });
+    const block = await run(ctx(), s, { maxBytes: 600 });
+    assert.ok(Buffer.byteLength(block) <= 600, `block is ${Buffer.byteLength(block)} bytes`);
+    assert.strictEqual(field(block, 'checklist'), '1000000 done, 1000000 testing, 1000000 coding, 1000000 pending (1000000 total)');
+    assert.strictEqual(field(block, 'remote_mode'), 'off');
+    assert.strictEqual(field(block, 'janitor'), 'clean');
+    assert.strictEqual(field(block, 'PREFETCH'), 'partial');
+  });
+
+  await test('a 200 whose body is not JSON reads as unknown, not none', async () => {
+    const block = await run(ctx(), stub({ latest: { status: 200, json: null }, active: { status: 200, json: null } }));
+    assert.strictEqual(field(block, 'previous_summary'), 'unknown');
+    assert.strictEqual(field(block, 'active_task'), 'unknown');
+    assert.strictEqual(field(block, 'PREFETCH'), 'partial');
+  });
+
   // The block is read by /session-start step 0, a string contract no compiler checks. The hook side
   // is the real output of a PM block with every fact; the skill side is the example block in step 0.
   await test('session-start step 0 knows the header and every key the block prints', async () => {
