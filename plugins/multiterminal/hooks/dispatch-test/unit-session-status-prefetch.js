@@ -165,6 +165,38 @@ async function main() {
     }
   });
 
+  // Pipeline run 4 (Adversary): a PM session's transcript can land in a worktree folder MT did not
+  // register, so get-latest skips it and returns an OLDER session. Register names the real predecessor;
+  // when they differ, the block must say pending rather than present the older recap as the last one.
+  await test('an older session than the registered predecessor is pending, never its recap', async () => {
+    const older = { status: 200, json: { session: { sessionId: 'older', processingStatus: 'complete', summary: 'Old news.' } } };
+    const block = await run(ctx(), stub({
+      latest: older,
+      register: { status: 200, json: { predecessorSessionId: 'newer', janitorSkipped: true } },
+    }));
+    assert.strictEqual(field(block, 'previous_summary'), 'pending');
+    assert.ok(!block.includes('Old news.'), 'the older recap leaked into the block');
+    assert.strictEqual(field(block, 'PREFETCH'), 'ok');
+
+    // get-latest found nothing at all, but a predecessor exists: pending, not none.
+    const missing = await run(ctx(), stub({
+      latest: { status: 404, json: null },
+      register: { status: 200, json: { predecessorSessionId: 'newer', janitorSkipped: true } },
+    }));
+    assert.strictEqual(field(missing, 'previous_summary'), 'pending');
+
+    // The same session: its recap is shown.
+    const same = await run(ctx(), stub({
+      latest: older,
+      register: { status: 200, json: { predecessorSessionId: 'older', janitorSkipped: true } },
+    }));
+    assert.strictEqual(field(same, 'previous_summary'), 'Old news.');
+
+    // Register did not answer: nothing to compare with, so today's behaviour.
+    const noRegister = await run(ctx(), stub({ latest: older, register: 'refuse' }));
+    assert.strictEqual(field(noRegister, 'previous_summary'), 'Old news.');
+  });
+
   await test('a failed latest-session call is unknown and partial; no previous session is none', async () => {
     const failed = await run(ctx(), stub({ latest: 'refuse' }));
     assert.strictEqual(field(failed, 'previous_summary'), 'unknown');
@@ -239,14 +271,19 @@ async function main() {
     assert.strictEqual(field(block, 'PREFETCH'), 'unavailable');
   });
 
-  await test('findings from the janitor\'s last scan are reported as a count', async () => {
+  await test('findings from the janitor\'s last scan are reported with their age, if at most 10 min old', async () => {
+    const findings = { status: 'complete', pendingMerges: [{}, {}], strandedDirs: ['x'] };
     const block = await run(ctx(), stub({ register: { status: 200, json: {
-      janitorFromCache: true,
-      janitorFindings: { status: 'complete', pendingMerges: [{}, {}], strandedDirs: ['x'] },
+      janitorFromCache: true, janitorScanAgeSeconds: 125, janitorFindings: findings,
     } } }));
-    assert.strictEqual(field(block, 'janitor'), '2 pending merge(s), 1 stranded dir(s)');
-    const clean = await run(ctx(), stub({ register: { status: 200, json: { janitorFromCache: true, janitorFindings: null } } }));
+    assert.strictEqual(field(block, 'janitor'), '2 pending merge(s), 1 stranded dir(s), scanned 2 min ago');
+    const clean = await run(ctx(), stub({ register: { status: 200, json: { janitorFromCache: true, janitorScanAgeSeconds: 30, janitorFindings: null } } }));
     assert.strictEqual(field(clean, 'janitor'), 'clean');
+    // Older than 10 minutes, or no age at all: too stale to report either way.
+    for (const age of [601, undefined, 'soon']) {
+      const stale = await run(ctx(), stub({ register: { status: 200, json: { janitorFromCache: true, janitorScanAgeSeconds: age, janitorFindings: findings } } }));
+      assert.strictEqual(field(stale, 'janitor'), 'not_checked', String(age));
+    }
   });
 
   await test('an MT that ignores skipJanitor still gets its findings reported', async () => {

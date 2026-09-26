@@ -546,6 +546,9 @@ const PREFETCH_DEADLINE_MS = 2500;
 // Hook output past about 2 KB is moved to a file and only a preview is shown, so the block stays small
 // and is printed right after the identity block.
 const PREFETCH_MAX_BYTES = 1200;
+// The oldest cached janitor scan worth reporting at startup (task 54005ee7). The sweep refreshes it
+// every 5 minutes, so a live MT normally has one well inside this.
+const JANITOR_MAX_AGE_S = 600;
 
 /**
  * One JSON request to MT, bounded by a TOTAL timeout (http's own `timeout` option is only an idle
@@ -681,15 +684,25 @@ async function buildStartupPrefetchBlock(ctx, deps = {}) {
   // 'pending', an answer rather than a gap, so it never puts get_latest_session's slow ensure-ready in
   // front of the menu. A complete session with no text will never get one, so it is 'none'. This hook
   // never calls ensure-ready. 'unknown' is kept for a call that failed or did not answer.
+  //
+  // Register names the session this agent ran just before, whatever folder its transcript went to
+  // (pipeline run 4). get-latest looks in the registered folder only, so when a session's transcript
+  // was written under a worktree folder it returns an OLDER session instead. Showing that older recap
+  // as "last time" is wrong, so any disagreement reads as pending. Without a register answer there is
+  // nothing to compare with and the block behaves as before.
+  const registered = ok('register');
+  const predecessor = registered && typeof registered.predecessorSessionId === 'string' && registered.predecessorSessionId
+    ? registered.predecessorSessionId : null;
   let summary = null;
   if (answers.latest && answers.latest.status === 404) {
-    facts.previous_summary = 'none';
+    facts.previous_summary = predecessor ? 'pending' : 'none';
   } else {
     const latest = ok('latest');
     const s = latest && latest.session;
     const text = s ? (s.summary || latest.summary) : null;
     if (!latest) facts.previous_summary = 'unknown';
-    else if (!s) facts.previous_summary = 'none';
+    else if (!s) facts.previous_summary = predecessor ? 'pending' : 'none';
+    else if (predecessor && s.sessionId !== predecessor) facts.previous_summary = 'pending';
     else if (text) facts.previous_summary = summary = prefetchField(text, 200);
     // Processed with nothing to say: it will never get a recap, so waiting for one would be wrong.
     else if (s.processingStatus === 'complete') facts.previous_summary = 'none';
@@ -704,20 +717,24 @@ async function buildStartupPrefetchBlock(ctx, deps = {}) {
   const worktree = ok('worktree');
   facts.worktree = worktree ? (worktree.worktreePath ? prefetchField(worktree.worktreePath, 140) : 'none') : 'unknown';
 
-  const registered = ok('register');
   facts.registered = registered ? 'yes' : 'no';
   if (registered) {
     const j = registered.janitorFindings;
     // janitorSkipped: MT honoured skipJanitor and had no earlier scan to report, so null findings
-    // mean "not looked", not "clean". Otherwise the findings are read the same way whether MT scanned
-    // now or returned its last scan (janitorFromCache); an MT that predates the flag ignores it.
-    if (registered.janitorSkipped === true) facts.janitor = 'not_checked';
+    // mean "not looked", not "clean". janitorFromCache: MT returned its last scan, which is reported
+    // only when it is at most JANITOR_MAX_AGE_S old, with its age; anything older, or of unknown age,
+    // is not_checked. An MT that predates the flag ignores it and scans now, as before.
+    const age = registered.janitorScanAgeSeconds;
+    const fromCache = registered.janitorFromCache === true;
+    const tooOld = fromCache && !(Number.isFinite(age) && age >= 0 && age <= JANITOR_MAX_AGE_S);
+    if (registered.janitorSkipped === true || tooOld) facts.janitor = 'not_checked';
     else if (!j) facts.janitor = 'clean';
     else if (j.status === 'unavailable') facts.janitor = 'scan unavailable';
     else {
       const merges = (j.pendingMerges || []).length;
       const stranded = (j.strandedDirs || []).length;
-      facts.janitor = `${merges} pending merge(s), ${stranded} stranded dir(s)${j.status === 'partial' ? ', partial scan' : ''}`;
+      const scanned = fromCache ? `, scanned ${Math.floor(age / 60)} min ago` : '';
+      facts.janitor = `${merges} pending merge(s), ${stranded} stranded dir(s)${j.status === 'partial' ? ', partial scan' : ''}${scanned}`;
     }
   }
 
