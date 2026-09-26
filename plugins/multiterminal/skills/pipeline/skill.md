@@ -95,6 +95,18 @@ Otherwise, resolve `<CODEX_COMPANION_PATH>` (glob at runtime):
 ls -d ~/.claude/plugins/cache/openai-codex/codex/*/scripts/codex-companion.mjs | sort -V | tail -1
 ```
 
+Also resolve `<CODEX_REPO_ROOT>` — the **main** repository root, NOT the task worktree you are standing in:
+
+```bash
+git rev-parse --path-format=absolute --git-common-dir | sed 's#/\.git$##'
+```
+
+**Always pass `--cwd "<CODEX_REPO_ROOT>"` to every `codex-companion.mjs` invocation** — it is accepted on `adversarial-review`, `review`, `status`, `result` and `cancel`. Put it **after** the subcommand: `main()` does `const [subcommand, ...argv] = process.argv.slice(2)`, so a flag placed before the subcommand is read AS the subcommand and the tool just prints its usage text. This is not cosmetic. Codex keys all of its state — including its long-lived `app-server-broker.mjs` process — on `git rev-parse --show-toplevel` of the cwd it is given. In a git worktree that resolves to the *worktree* root, so a pipeline run inside `.claude/worktrees/<taskId>` creates a **broker and a state directory of its own**, named after the task id. MT then prunes the worktree when the task completes and nothing ever reclaims that state.
+
+Measured on this machine, 2026-09-18: 113 such state directories had accumulated under `$TMPDIR/codex-companion`, one per task worktree, 108 of them holding a `broker.json` whose recorded pid was long dead. Pinning the cwd to the repo root collapses all of them to one per repo.
+
+> **Why a dead record is not merely untidy.** `SessionEnd` calls `teardownBrokerSession(..., killProcess: terminateProcessTree)` on whatever pid that `broker.json` names, without checking that the pid is still a broker. Pids get recycled, so a stale record eventually names an innocent process — four of the records found on 2026-09-18 pointed at `msedgewebview2` (the Clarion IDE's own WebView2 host), `McpGateway.exe` and `msedge`. Killing by an identifier that is not proof of identity is the same defect class as `Get-Process <name> | Kill`. Keeping one broker per repo instead of one per worktree is what keeps that record fresh enough to be true.
+
 If the glob finds nothing, Codex is not installed. Demote every gate with value `"codex"` to `"claude"` and log:
 
 ```
@@ -230,7 +242,7 @@ Then invoke Codex with the focus:
 
 ```
 Bash(
-  command=`node "<CODEX_COMPANION_PATH>" adversarial-review --wait "<VERIFIER_FOCUS>"`,
+  command=`node "<CODEX_COMPANION_PATH>" adversarial-review --cwd "<CODEX_REPO_ROOT>" --wait "<VERIFIER_FOCUS>"`,
   description="Codex verifier gate",
   run_in_background=false
 )
@@ -443,7 +455,7 @@ For each role with `PIPELINE_TOPOLOGY.<role> === "codex"`:
 
 ```
 Bash(
-  command=`node "<CODEX_COMPANION_PATH>" adversarial-review "<FOCUS>"`,
+  command=`node "<CODEX_COMPANION_PATH>" adversarial-review --cwd "<CODEX_REPO_ROOT>" "<FOCUS>"`,
   description="Codex <role> gate",
   run_in_background=true
 )
@@ -473,6 +485,20 @@ Gate agents are ONE-SHOT: they produce a single report and have no further job. 
 If the harness makes a gate persistent anyway (some environments treat every Agent spawn as a teammate), or you deliberately named one:
 - Send `SendMessage({to: <gate>, message: {type: "shutdown_request", reason: "report saved — pipeline gate complete"}})` **immediately after saving that gate's report** (per-gate, not batched at the end — a re-run failure or context break must not orphan them).
 - At the end of every run (pass OR fail), sweep: confirm no gate agents from this run are still open; shut down any stragglers before presenting the dashboard.
+
+**Codex gates leave a different kind of straggler, and the sweep above does not catch it.** A background `adversarial-review` spawns a *detached* `task-worker` (`spawn(..., detached: true, stdio: "ignore")` then `unref()`), so it outlives your session and no `shutdown_request` reaches it. At the end of every run that dispatched any Codex gate — pass OR fail, and also on an early exit such as an escalation, a context break or a user abort:
+
+```bash
+node "<CODEX_COMPANION_PATH>" status --all --cwd "<CODEX_REPO_ROOT>" --json
+```
+
+Any job still `queued` or `running` that this pipeline launched must be cancelled explicitly:
+
+```bash
+node "<CODEX_COMPANION_PATH>" cancel <JOB_ID> --cwd "<CODEX_REPO_ROOT>"
+```
+
+Cancel per job id from `CODEX_JOB_IDS`; do not cancel jobs you did not launch, since another session may be running its own. A finished pipeline leaves ZERO gate agents open **and** zero jobs of its own in a non-terminal state. Do not leave a job queued on the assumption the next run will notice it — the next run may be in a different worktree, and before the `--cwd` pinning above that meant a different state directory entirely, where it would never be seen again.
 
 Each `claude`-dispatched Phase-2 gate that returns inline must have its report saved immediately via `save_task_report`. Do NOT wait for all agents — save each one as it returns. The UI shows review badges (Build/Quality/Security/Debug/Adversary) based on saved reports. Without saving, badges remain as hourglasses even after the pipeline passes clean.
 
@@ -833,3 +859,4 @@ save_task_report(
 - **Content search**: Use `mcp__multiterminal__search_code` for finding files, NOT Grep.
 - **No user names in output**: Refer to "the user" or "the tester", never by personal name.
 - **No zombie gates**: Spawn gate agents ephemeral (no `name:` — see §3.0.1). If any gate ended up persistent, shutdown_request it right after its report is saved, and sweep for stragglers before presenting the dashboard. A finished pipeline leaves ZERO gate agents open.
+- **No leaked Codex state**: Pass `--cwd "<CODEX_REPO_ROOT>"` (the main repo root, never the task worktree) to every `codex-companion.mjs` call, and cancel your own still-running jobs before finishing — see §0.5 and §3.0.1. Otherwise each worktree accrues its own broker process and state directory that nothing ever reclaims, and the stale pid left behind eventually names an unrelated process that `SessionEnd` will terminate.
