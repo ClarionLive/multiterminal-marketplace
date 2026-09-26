@@ -136,8 +136,8 @@ async function main() {
   // Pipeline run 1 (Adversary): a predecessor is normally NOT complete at hook time, because only the
   // next session's get_latest_session runs ensure-ready. If that made the block partial, the fast
   // path would almost never run. A pending recap must not gate the menu.
-  await test('a predecessor not summarized yet is pending, and PREFETCH stays ok', async () => {
-    const open = await run(ctx(), stub({ latest: { status: 200, json: { session: { processingStatus: 'open', summary: 'half-written' } } } }));
+  await test('a predecessor with no summary yet is pending, and PREFETCH stays ok', async () => {
+    const open = await run(ctx(), stub({ latest: { status: 200, json: { session: { processingStatus: 'open', summary: null } } } }));
     assert.strictEqual(field(open, 'previous_summary'), 'pending');
     assert.strictEqual(field(open, 'PREFETCH'), 'ok');
     // Processed but empty will never get a recap, so it is none, not pending (pipeline run 2).
@@ -150,6 +150,19 @@ async function main() {
     }));
     assert.strictEqual(field(idle, 'continue_option'), 'Resume where we left off');
     assert.strictEqual(field(idle, 'PREFETCH'), 'ok');
+  });
+
+  // Pipeline run 3 (Debugger, Adversary): the SessionEnd import writes a heuristic summary but leaves the
+  // status unchanged, so a hook that only trusted 'complete' showed "pending" on every fast-path launch.
+  await test('a summary is used whatever the processing status', async () => {
+    for (const status of ['open', 'closed', 'imported', 'indexed']) {
+      const block = await run(ctx(), stub({
+        active: { status: 200, json: { task: null } },
+        latest: { status: 200, json: { session: { processingStatus: status, summary: 'Fixed the HUD filter.' } } },
+      }));
+      assert.strictEqual(field(block, 'previous_summary'), 'Fixed the HUD filter.', status);
+      assert.strictEqual(field(block, 'continue_option'), 'Resume: Fixed the HUD filter.', status);
+    }
   });
 
   await test('a failed latest-session call is unknown and partial; no previous session is none', async () => {
@@ -224,6 +237,16 @@ async function main() {
     const elapsed = Date.now() - started;
     assert.ok(elapsed >= 2400 && elapsed <= 2900, `finished after ${elapsed} ms`);
     assert.strictEqual(field(block, 'PREFETCH'), 'unavailable');
+  });
+
+  await test('findings from the janitor\'s last scan are reported as a count', async () => {
+    const block = await run(ctx(), stub({ register: { status: 200, json: {
+      janitorFromCache: true,
+      janitorFindings: { status: 'complete', pendingMerges: [{}, {}], strandedDirs: ['x'] },
+    } } }));
+    assert.strictEqual(field(block, 'janitor'), '2 pending merge(s), 1 stranded dir(s)');
+    const clean = await run(ctx(), stub({ register: { status: 200, json: { janitorFromCache: true, janitorFindings: null } } }));
+    assert.strictEqual(field(clean, 'janitor'), 'clean');
   });
 
   await test('an MT that ignores skipJanitor still gets its findings reported', async () => {

@@ -675,10 +675,11 @@ async function buildStartupPrefetchBlock(ctx, deps = {}) {
     }
   }
 
-  // 404 is MT's answer for "no previous session". A session MT has but has not summarized yet is
-  // 'pending', which is an answer, not a gap: only the next session's get_latest_session runs
-  // ensure-ready, so at this point the predecessor is usually not summarized, and letting that make
-  // the block partial would put the slow ensure-ready in front of the menu on most launches. This hook
+  // 404 is MT's answer for "no previous session". Any summary text is used, whatever the session's
+  // processing status: the SessionEnd import writes a short summary before processing completes, and
+  // waiting for 'complete' threw that away (pipeline run 3). With no text yet the session is
+  // 'pending', an answer rather than a gap, so it never puts get_latest_session's slow ensure-ready in
+  // front of the menu. A complete session with no text will never get one, so it is 'none'. This hook
   // never calls ensure-ready. 'unknown' is kept for a call that failed or did not answer.
   let summary = null;
   if (answers.latest && answers.latest.status === 404) {
@@ -686,7 +687,7 @@ async function buildStartupPrefetchBlock(ctx, deps = {}) {
   } else {
     const latest = ok('latest');
     const s = latest && latest.session;
-    const text = s && s.processingStatus === 'complete' ? (s.summary || latest.summary) : null;
+    const text = s ? (s.summary || latest.summary) : null;
     if (!latest) facts.previous_summary = 'unknown';
     else if (!s) facts.previous_summary = 'none';
     else if (text) facts.previous_summary = summary = prefetchField(text, 200);
@@ -707,8 +708,9 @@ async function buildStartupPrefetchBlock(ctx, deps = {}) {
   facts.registered = registered ? 'yes' : 'no';
   if (registered) {
     const j = registered.janitorFindings;
-    // janitorSkipped: MT honoured skipJanitor, so null findings mean "not looked", not "clean".
-    // An MT that predates the flag ignores it and answers as before.
+    // janitorSkipped: MT honoured skipJanitor and had no earlier scan to report, so null findings
+    // mean "not looked", not "clean". Otherwise the findings are read the same way whether MT scanned
+    // now or returned its last scan (janitorFromCache); an MT that predates the flag ignores it.
     if (registered.janitorSkipped === true) facts.janitor = 'not_checked';
     else if (!j) facts.janitor = 'clean';
     else if (j.status === 'unavailable') facts.janitor = 'scan unavailable';
