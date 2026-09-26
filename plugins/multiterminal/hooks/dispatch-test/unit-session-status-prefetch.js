@@ -37,7 +37,7 @@ const ANSWERS = {
   },
   latest: { status: 200, json: { session: { processingStatus: 'complete', summary: 'Fixed the HUD filter.' }, summary: 'Fixed the HUD filter.' } },
   worktree: { status: 200, json: { worktreePath: 'H:\\Repo\\.claude\\worktrees\\54005ee7' } },
-  register: { status: 200, json: { sessionId: SESSION, processingStatus: 'open', janitorFindings: null } },
+  register: { status: 200, json: { sessionId: SESSION, processingStatus: 'open', janitorFindings: null, janitorSkipped: true } },
 };
 
 function keyOf(method, urlPath) {
@@ -93,7 +93,7 @@ async function main() {
     assert.strictEqual(field(block, 'continue_option'), 'Pick up "A PM terminal is ready in a few seconds"');
     assert.strictEqual(field(block, 'worktree'), 'H:\\Repo\\.claude\\worktrees\\54005ee7');
     assert.strictEqual(field(block, 'registered'), 'yes');
-    assert.strictEqual(field(block, 'janitor'), 'clean');
+    assert.strictEqual(field(block, 'janitor'), 'not_checked');
     assert.ok(!block.includes('unknown'), 'nothing is unknown when every call answered');
   });
 
@@ -110,8 +110,8 @@ async function main() {
     assert.strictEqual(byKey.worktree.urlPath, `/api/worktrees/active/Alice?projectId=${PROJECT}`);
     assert.strictEqual(byKey.latest.urlPath,
       `/api/session-lineage/latest?projectPath=H%3A%5CRepo&agentName=Alice&excludeSessionId=${SESSION}`);
-    // Exactly what the register_session MCP tool sends.
-    assert.deepStrictEqual(byKey.register.body, { sessionId: SESSION, agentName: 'Alice', projectPath: 'H:\\Repo' });
+    // What the register_session MCP tool sends, plus the janitor opt-out.
+    assert.deepStrictEqual(byKey.register.body, { sessionId: SESSION, agentName: 'Alice', projectPath: 'H:\\Repo', skipJanitor: true });
   });
 
   await test('some calls fail: PREFETCH=partial, the failed facts are unknown, the rest are kept', async () => {
@@ -140,8 +140,9 @@ async function main() {
     const open = await run(ctx(), stub({ latest: { status: 200, json: { session: { processingStatus: 'open', summary: 'half-written' } } } }));
     assert.strictEqual(field(open, 'previous_summary'), 'pending');
     assert.strictEqual(field(open, 'PREFETCH'), 'ok');
+    // Processed but empty will never get a recap, so it is none, not pending (pipeline run 2).
     const noText = await run(ctx(), stub({ latest: { status: 200, json: { session: { processingStatus: 'complete', summary: null } } } }));
-    assert.strictEqual(field(noText, 'previous_summary'), 'pending');
+    assert.strictEqual(field(noText, 'previous_summary'), 'none');
     // No task and no recap yet: the Continue option is still known.
     const idle = await run(ctx(), stub({
       active: { status: 200, json: { task: null } },
@@ -202,13 +203,45 @@ async function main() {
     assert.strictEqual(field(block, 'PREFETCH'), 'ok');
   });
 
+  await test('the deadline is exactly 2.5 s, and the block waits for it and no longer (injected timer)', async () => {
+    const hang = { remote: 'hang', active: 'hang', latest: 'hang', worktree: 'hang', register: 'hang' };
+    const timers = [];
+    const setTimer = (fn, ms) => { timers.push({ fn, ms }); return timers.length; };
+    let settled = false;
+    const pending = run(ctx(), stub(hang), { setTimer, clearTimer: () => {} }).then((b) => { settled = true; return b; });
+    await new Promise((r) => setImmediate(r));
+    assert.deepStrictEqual(timers.map((t) => t.ms), [2500]);
+    assert.strictEqual(settled, false, 'finished before its deadline fired');
+    timers[0].fn();
+    const block = await pending;
+    assert.strictEqual(field(block, 'PREFETCH'), 'unavailable');
+  });
+
   await test('the real 2.5 s deadline holds when nothing ever answers', async () => {
     const hang = { remote: 'hang', active: 'hang', latest: 'hang', worktree: 'hang', register: 'hang' };
     const started = Date.now();
     const block = await run(ctx(), stub(hang));
     const elapsed = Date.now() - started;
-    assert.ok(elapsed >= 2400 && elapsed <= 3500, `finished after ${elapsed} ms`);
+    assert.ok(elapsed >= 2400 && elapsed <= 2900, `finished after ${elapsed} ms`);
     assert.strictEqual(field(block, 'PREFETCH'), 'unavailable');
+  });
+
+  await test('an MT that ignores skipJanitor still gets its findings reported', async () => {
+    const clean = await run(ctx(), stub({ register: { status: 200, json: { janitorFindings: null } } }));
+    assert.strictEqual(field(clean, 'janitor'), 'clean');
+    const found = await run(ctx(), stub({ register: { status: 200, json: { janitorFindings: { status: 'complete', pendingMerges: [{}], strandedDirs: [] } } } }));
+    assert.strictEqual(field(found, 'janitor'), '1 pending merge(s), 0 stranded dir(s)');
+  });
+
+  await test('checklist needs all five counts to be integers; otherwise unknown, and the block stays ok', async () => {
+    for (const bad of ['done', 'testing', 'coding', 'pending', 'total']) {
+      const counts = { total: 3, done: 1, coding: 1, testing: 0, pending: 1, [bad]: '2' };
+      const block = await run(ctx(), stub({
+        active: { status: 200, json: { task: { id: '54005ee7', title: 'T' }, checklistSummary: counts } },
+      }));
+      assert.strictEqual(field(block, 'checklist'), 'unknown', `${bad} as a string`);
+      assert.strictEqual(field(block, 'PREFETCH'), 'ok', `${bad} as a string`);
+    }
   });
 
   await test('a newline in a title or summary cannot add a line to the block', async () => {
@@ -282,7 +315,7 @@ async function main() {
     assert.ok(Buffer.byteLength(block) <= 600, `block is ${Buffer.byteLength(block)} bytes`);
     assert.strictEqual(field(block, 'checklist'), '1000000 done, 1000000 testing, 1000000 coding, 1000000 pending (1000000 total)');
     assert.strictEqual(field(block, 'remote_mode'), 'off');
-    assert.strictEqual(field(block, 'janitor'), 'clean');
+    assert.strictEqual(field(block, 'janitor'), 'not_checked');
     assert.strictEqual(field(block, 'PREFETCH'), 'partial');
   });
 

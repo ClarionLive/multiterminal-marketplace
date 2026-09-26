@@ -599,7 +599,9 @@ function prefetchField(value, maxBytes) {
  *
  * ctx:  { env, terminalName, sessionId, projectPath, projectId, scopeDegraded, projectName }
  *       projectName is only passed for a PM (undefined otherwise; null when the lookup failed).
- * deps: { request(method, path, body, timeoutMs), now(), callTimeoutMs, deadlineMs }, all optional.
+ * deps: { request(method, path, body, timeoutMs), now(), callTimeoutMs, deadlineMs, setTimer, clearTimer },
+ *       all optional. setTimer/clearTimer default to setTimeout/clearTimeout and exist so a test can
+ *       fire the deadline itself.
  */
 async function buildStartupPrefetchBlock(ctx, deps = {}) {
   if (ctx.env.MULTITERMINAL_SPAWNER) return '';
@@ -607,6 +609,8 @@ async function buildStartupPrefetchBlock(ctx, deps = {}) {
   const now = deps.now || (() => new Date());
   const callTimeoutMs = deps.callTimeoutMs ?? PREFETCH_CALL_TIMEOUT_MS;
   const deadlineMs = deps.deadlineMs ?? PREFETCH_DEADLINE_MS;
+  const setTimer = deps.setTimer || setTimeout;
+  const clearTimer = deps.clearTimer || clearTimeout;
 
   const name = encodeURIComponent(ctx.terminalName);
   const scope = ctx.projectId ? `?projectId=${encodeURIComponent(ctx.projectId)}` : '';
@@ -615,7 +619,9 @@ async function buildStartupPrefetchBlock(ctx, deps = {}) {
     latest: ['GET', `/api/session-lineage/latest?projectPath=${encodeURIComponent(ctx.projectPath)}`
       + `&agentName=${name}&excludeSessionId=${encodeURIComponent(ctx.sessionId || '')}`, null],
     register: ctx.sessionId
-      ? ['POST', '/api/session-lineage/register', { sessionId: ctx.sessionId, agentName: ctx.terminalName, projectPath: ctx.projectPath }]
+      // The register_session tool's body, plus skipJanitor: the janitor enrichment alone may take 3 s,
+      // longer than this call has, and its findings still reach the team lead through the inbox.
+      ? ['POST', '/api/session-lineage/register', { sessionId: ctx.sessionId, agentName: ctx.terminalName, projectPath: ctx.projectPath, skipJanitor: true }]
       : null,
     // A failed project lookup must not fall back to the cross-project board (see resolveHookProjectId),
     // so the two project-scoped calls are skipped and reported unknown.
@@ -630,9 +636,9 @@ async function buildStartupPrefetchBlock(ctx, deps = {}) {
       .then(() => request(method, urlPath, body, key === 'register' ? deadlineMs : callTimeoutMs))
       .then((res) => { answers[key] = res; }));
   let deadlineTimer;
-  const deadline = new Promise((resolve) => { deadlineTimer = setTimeout(resolve, deadlineMs); });
+  const deadline = new Promise((resolve) => { deadlineTimer = setTimer(resolve, deadlineMs); });
   await Promise.race([Promise.allSettled(pending), deadline]);
-  clearTimeout(deadlineTimer);
+  clearTimer(deadlineTimer);
   const answered = Object.keys(answers).length;
 
   // A 2xx counts only with a JSON object body. A 200 that is not JSON (a proxy page, a truncated
@@ -659,8 +665,12 @@ async function buildStartupPrefetchBlock(ctx, deps = {}) {
   } else {
     taskTitle = prefetchField(active.task.title || '(untitled)', 100);
     facts.active_task = `${taskTitle} [${prefetchField(active.task.id, 16)}]`;
+    // All five counts must be integers, or the line would print whatever MT sent ("undefined done").
+    // Not a gap: step 0 just leaves progress out, so it does not make the block partial.
     const c = active.checklistSummary;
-    if (c && Number.isInteger(c.total) && c.total > 0) {
+    if (c && ![c.done, c.testing, c.coding, c.pending, c.total].every(Number.isInteger)) {
+      facts.checklist = 'unknown';
+    } else if (c && c.total > 0) {
       facts.checklist = `${c.done} done, ${c.testing} testing, ${c.coding} coding, ${c.pending} pending (${c.total} total)`;
     }
   }
@@ -680,6 +690,8 @@ async function buildStartupPrefetchBlock(ctx, deps = {}) {
     if (!latest) facts.previous_summary = 'unknown';
     else if (!s) facts.previous_summary = 'none';
     else if (text) facts.previous_summary = summary = prefetchField(text, 200);
+    // Processed with nothing to say: it will never get a recap, so waiting for one would be wrong.
+    else if (s.processingStatus === 'complete') facts.previous_summary = 'none';
     else facts.previous_summary = 'pending';
   }
 
@@ -695,7 +707,10 @@ async function buildStartupPrefetchBlock(ctx, deps = {}) {
   facts.registered = registered ? 'yes' : 'no';
   if (registered) {
     const j = registered.janitorFindings;
-    if (!j) facts.janitor = 'clean';
+    // janitorSkipped: MT honoured skipJanitor, so null findings mean "not looked", not "clean".
+    // An MT that predates the flag ignores it and answers as before.
+    if (registered.janitorSkipped === true) facts.janitor = 'not_checked';
+    else if (!j) facts.janitor = 'clean';
     else if (j.status === 'unavailable') facts.janitor = 'scan unavailable';
     else {
       const merges = (j.pendingMerges || []).length;
@@ -707,7 +722,8 @@ async function buildStartupPrefetchBlock(ctx, deps = {}) {
   const maxBytes = deps.maxBytes ?? PREFETCH_MAX_BYTES;
   const render = () => {
     // ok: nothing is missing, so the skill needs no calls. unavailable: MT answered nothing.
-    const missing = facts.registered === 'no' || Object.values(facts).includes('unknown');
+    const missing = facts.registered === 'no'
+      || Object.entries(facts).some(([k, v]) => v === 'unknown' && k !== 'checklist');
     const status = answered === 0 ? 'unavailable' : (missing ? 'partial' : 'ok');
     const lines = [
       '## MultiTerminal Startup Prefetch (from SessionStart hook)',
