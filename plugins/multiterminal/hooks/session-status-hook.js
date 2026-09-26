@@ -524,6 +524,223 @@ function probeSpawnJobStatus(docId, timeoutMs = 2000) {
   });
 }
 
+// ─── Startup prefetch (task 54005ee7) ────────────────────────────────────────────────────────────
+//
+// /session-start used to spend 7-10 model turns fetching the greeting's facts one tool call at a
+// time. This hook already runs at startup and knows the identity, so it asks MT for those facts in
+// parallel and prints them as one block the skill can greet from directly.
+//
+// Bounds: each call gets PREFETCH_CALL_TIMEOUT_MS and the whole fan-out a hard PREFETCH_DEADLINE_MS,
+// well inside the 10 s hooks.json timeout. A call that has not answered by then is reported as
+// unknown, never guessed. It never calls ensure-ready (that is the slow path get_latest_session
+// takes), and it does not register the terminal: the MCP server does that, because the terminal's
+// ownerPid feeds the liveness reaper and this hook's parent may not be claude.exe.
+//
+// 127.0.0.1, not localhost: localhost can resolve to ::1 first, and MT listens on IPv4.
+const PREFETCH_HOST = '127.0.0.1';
+const PREFETCH_PORT = 5050;
+const PREFETCH_CALL_TIMEOUT_MS = 1500;
+const PREFETCH_DEADLINE_MS = 2500;
+// Hook output past about 2 KB is moved to a file and only a preview is shown, so the block stays small
+// and is printed right after the identity block.
+const PREFETCH_MAX_BYTES = 1200;
+
+/**
+ * One JSON request to MT, bounded by a TOTAL timeout (http's own `timeout` option is only an idle
+ * timer). Resolves { status, json }; rejects on a connection error or the timeout.
+ */
+function prefetchRequest(method, urlPath, body, timeoutMs) {
+  return new Promise((resolve, reject) => {
+    const http = require('http');
+    const payload = body ? JSON.stringify(body) : null;
+    const headers = payload
+      ? { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(payload) }
+      : {};
+    const req = http.request({ hostname: PREFETCH_HOST, port: PREFETCH_PORT, path: urlPath, method, headers }, (res) => {
+      let text = '';
+      res.setEncoding('utf8');
+      res.on('data', (chunk) => { text += chunk; });
+      res.on('end', () => {
+        clearTimeout(timer);
+        let json = null;
+        try { json = text ? JSON.parse(text) : null; } catch (_e) { json = null; }
+        resolve({ status: res.statusCode, json });
+      });
+      res.on('error', (e) => { clearTimeout(timer); reject(e); });
+    });
+    const timer = setTimeout(() => { req.destroy(new Error('timeout')); }, timeoutMs);
+    req.on('error', (e) => { clearTimeout(timer); reject(e); });
+    if (payload) req.write(payload);
+    req.end();
+  });
+}
+
+// C0 and C1 controls (tab, CR, LF, NEL among them), DEL, and the Unicode line and paragraph separators.
+function isLineBreakOrControl(cp) {
+  return cp < 0x20 || (cp >= 0x7f && cp <= 0x9f) || cp === 0x2028 || cp === 0x2029;
+}
+
+// One line, no control characters, at most maxBytes of UTF-8. Values come from task titles and
+// session summaries, so a newline in one must not be able to write an extra line into the block.
+function prefetchField(value, maxBytes) {
+  const flat = Array.from(String(value), (ch) => (isLineBreakOrControl(ch.codePointAt(0)) ? ' ' : ch)).join('').split(' ').filter(Boolean).join(' ');
+  if (Buffer.byteLength(flat) <= maxBytes) return flat;
+  // Cut by code point, so a surrogate pair is never split. No character is under one byte, so
+  // maxBytes code points is always enough to start from.
+  const chars = Array.from(flat).slice(0, maxBytes);
+  while (Buffer.byteLength(chars.join('')) > maxBytes - 3) chars.pop();
+  return `${chars.join('').trimEnd()}...`;
+}
+
+/**
+ * The PREFETCH block, or '' for a spawned helper (a helper collects its job and never shows the menu).
+ *
+ * ctx:  { env, terminalName, sessionId, projectPath, projectId, scopeDegraded, projectName }
+ *       projectName is only passed for a PM (undefined otherwise; null when the lookup failed).
+ * deps: { request(method, path, body, timeoutMs), now(), callTimeoutMs, deadlineMs }, all optional.
+ */
+async function buildStartupPrefetchBlock(ctx, deps = {}) {
+  if (ctx.env.MULTITERMINAL_SPAWNER) return '';
+  const request = deps.request || prefetchRequest;
+  const now = deps.now || (() => new Date());
+  const callTimeoutMs = deps.callTimeoutMs ?? PREFETCH_CALL_TIMEOUT_MS;
+  const deadlineMs = deps.deadlineMs ?? PREFETCH_DEADLINE_MS;
+
+  const name = encodeURIComponent(ctx.terminalName);
+  const scope = ctx.projectId ? `?projectId=${encodeURIComponent(ctx.projectId)}` : '';
+  const calls = {
+    remote: ['GET', '/api/remote-mode', null],
+    latest: ['GET', `/api/session-lineage/latest?projectPath=${encodeURIComponent(ctx.projectPath)}`
+      + `&agentName=${name}&excludeSessionId=${encodeURIComponent(ctx.sessionId || '')}`, null],
+    register: ctx.sessionId
+      ? ['POST', '/api/session-lineage/register', { sessionId: ctx.sessionId, agentName: ctx.terminalName, projectPath: ctx.projectPath }]
+      : null,
+    // A failed project lookup must not fall back to the cross-project board (see resolveHookProjectId),
+    // so the two project-scoped calls are skipped and reported unknown.
+    active: ctx.scopeDegraded ? null : ['GET', `/api/tasks/active/${name}${scope}`, null],
+    worktree: ctx.scopeDegraded ? null : ['GET', `/api/worktrees/active/${name}${scope}`, null],
+  };
+
+  // Each call records its own answer, so whatever arrived before the deadline is kept.
+  const answers = {};
+  const pending = Object.entries(calls).filter(([, c]) => c).map(([key, [method, urlPath, body]]) =>
+    Promise.resolve()
+      .then(() => request(method, urlPath, body, callTimeoutMs))
+      .then((res) => { answers[key] = res; }));
+  let deadlineTimer;
+  const deadline = new Promise((resolve) => { deadlineTimer = setTimeout(resolve, deadlineMs); });
+  await Promise.race([Promise.allSettled(pending), deadline]);
+  clearTimeout(deadlineTimer);
+  const answered = Object.keys(answers).length;
+
+  const ok = (key) => answers[key] && answers[key].status >= 200 && answers[key].status < 300 ? answers[key].json || {} : null;
+  const facts = {};
+
+  const remote = ok('remote');
+  facts.remote_mode = remote && typeof remote.remote_mode === 'boolean' ? (remote.remote_mode ? 'on' : 'off') : 'unknown';
+
+  if (ctx.projectName !== undefined) {
+    facts.project_name = ctx.projectName ? prefetchField(ctx.projectName, 80) : 'unknown';
+  }
+
+  const active = ok('active');
+  let taskTitle = null;
+  if (!active) {
+    facts.active_task = 'unknown';
+  } else if (!active.task) {
+    facts.active_task = 'none';
+  } else {
+    taskTitle = prefetchField(active.task.title || '(untitled)', 100);
+    facts.active_task = `${taskTitle} [${prefetchField(active.task.id, 16)}]`;
+    const c = active.checklistSummary;
+    if (c && Number.isInteger(c.total) && c.total > 0) {
+      facts.checklist = `${c.done} done, ${c.testing} testing, ${c.coding} coding, ${c.pending} pending (${c.total} total)`;
+    }
+  }
+
+  // 404 is MT's answer for "no previous session". A session that is not yet summarized is left
+  // unknown: get_latest_session will process it, and this hook must not.
+  let summary = null;
+  if (answers.latest && answers.latest.status === 404) {
+    facts.previous_summary = 'none';
+  } else {
+    const latest = ok('latest');
+    const s = latest && latest.session;
+    const text = s && s.processingStatus === 'complete' ? (s.summary || latest.summary) : null;
+    if (latest && !s) facts.previous_summary = 'none';
+    else if (text) facts.previous_summary = summary = prefetchField(text, 280);
+    else facts.previous_summary = 'unknown';
+  }
+
+  if (taskTitle) facts.continue_option = `Pick up "${prefetchField(taskTitle, 60)}"`;
+  else if (summary) facts.continue_option = `Resume: ${prefetchField(summary, 60)}`;
+  else if (facts.active_task === 'none' && facts.previous_summary === 'none') facts.continue_option = 'Resume where we left off';
+  else facts.continue_option = 'unknown';
+
+  const worktree = ok('worktree');
+  facts.worktree = worktree ? (worktree.worktreePath ? prefetchField(worktree.worktreePath, 160) : 'none') : 'unknown';
+
+  const registered = ok('register');
+  facts.registered = registered ? 'yes' : 'no';
+  if (registered) {
+    const j = registered.janitorFindings;
+    if (!j) facts.janitor = 'clean';
+    else if (j.status === 'unavailable') facts.janitor = 'scan unavailable';
+    else {
+      const merges = (j.pendingMerges || []).length;
+      const stranded = (j.strandedDirs || []).length;
+      facts.janitor = `${merges} pending merge(s), ${stranded} stranded dir(s)${j.status === 'partial' ? ', partial scan' : ''}`;
+    }
+  }
+
+  // ok: nothing is missing, so the skill needs no calls. unavailable: MT answered nothing.
+  const missing = facts.registered === 'no' || Object.values(facts).includes('unknown');
+  const status = answered === 0 ? 'unavailable' : (missing ? 'partial' : 'ok');
+
+  const lines = [
+    '## MultiTerminal Startup Prefetch (from SessionStart hook)',
+    `PREFETCH=${status}`,
+    `snapshot=${now().toISOString()}`,
+    'These facts are for the greeting and menu only. Re-read anything before acting on it.',
+  ];
+  if (status !== 'unavailable') {
+    for (const [key, value] of Object.entries(facts)) lines.push(`${key}=${value}`);
+  }
+  let block = lines.join('\n');
+  // The field caps keep a realistic block far below the limit; this is the backstop.
+  while (Buffer.byteLength(block) > PREFETCH_MAX_BYTES) block = block.slice(0, -1);
+  return block;
+}
+
+/**
+ * The inputs buildStartupPrefetchBlock needs from SQLite, on one short-lived read-only handle: the
+ * project scope (same resolution as the board below) and, for a PM only, the project's name.
+ */
+function readPrefetchScope(env, pmLines) {
+  const out = { projectId: null, scopeDegraded: false, projectName: undefined };
+  const isPm = pmLines.length > 0;
+  if (isPm) out.projectName = null;
+  try {
+    const Database = requireBetterSqlite3();
+    if (!Database || !fs.existsSync(DB_PATH)) { out.scopeDegraded = true; return out; }
+    const db = new Database(DB_PATH, { readonly: true });
+    try {
+      const scope = resolveHookProjectId(db);
+      out.projectId = scope.id;
+      out.scopeDegraded = scope.degraded;
+      if (isPm) {
+        const row = db.prepare('SELECT name FROM projects WHERE id = ?').get(env.MULTITERMINAL_PROJECT_ID);
+        out.projectName = row && row.name ? String(row.name) : null;
+      }
+    } finally {
+      db.close();
+    }
+  } catch (_e) {
+    out.scopeDegraded = true;
+  }
+  return out;
+}
+
 async function main() {
   let input = '';
   for await (const chunk of process.stdin) {
@@ -655,8 +872,29 @@ async function main() {
       console.log(`MULTITERMINAL_NAME=${terminalName}`);
       console.log(`MULTITERMINAL_DOC_ID=${process.env.MULTITERMINAL_DOC_ID || ''}`);
       console.log(`CLAUDE_SESSION_ID=${sessionId || ''}`);
-      for (const line of projectManagerRoleLines(process.env)) console.log(line);
+      const pmLines = projectManagerRoleLines(process.env);
+      for (const line of pmLines) console.log(line);
       console.log('');
+
+      // Task 54005ee7: the greeting's facts, fetched in parallel, printed straight after the
+      // identity so they stay inside the preview. Never throws; bounded by PREFETCH_DEADLINE_MS.
+      try {
+        const scope = readPrefetchScope(process.env, pmLines);
+        const block = await buildStartupPrefetchBlock({
+          env: process.env,
+          terminalName,
+          sessionId,
+          projectPath: hookData.cwd || process.cwd(),
+          ...scope,
+        });
+        if (block) {
+          console.log(block);
+          console.log('');
+        }
+        dtrace(`STEP 5c: prefetch block ${Buffer.byteLength(block)} bytes`);
+      } catch (e) {
+        dtrace(`STEP 5c: prefetch failed: ${e.message}`);
+      }
 
       // Surface a missing native DB module to the user instead of silently no-op'ing
       // (issue #7) — otherwise profiles/lifecycle/activity quietly stop working.
@@ -888,4 +1126,4 @@ if (require.main === module) {
   });
 }
 
-module.exports = { resolveHookProjectId, projectManagerRoleLines };
+module.exports = { resolveHookProjectId, projectManagerRoleLines, buildStartupPrefetchBlock, PREFETCH_MAX_BYTES };
