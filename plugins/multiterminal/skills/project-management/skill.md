@@ -298,7 +298,7 @@ There are two kinds of team, and they are not interchangeable:
 | Report back | `SendMessage` to `team-lead` | The MultiTerminal channel (`send_message` / `reply`) |
 | Board identity | No | Yes: claims, checklist items, `list_terminals` |
 | Cost | Cheap, fast | A full session each; ~10–30s to boot |
-| Ends | Shutdown protocol | Only the Owner can close a pane |
+| Ends | Shutdown protocol | `close_helper` (from the pane that spawned it), or the Owner |
 
 **Default to 5.3a.** Use 5.3b only when the work must outlive your turn, the Owner wants to watch or steer it, it needs its own board identity or environment, or you need an agent that can disagree with you.
 
