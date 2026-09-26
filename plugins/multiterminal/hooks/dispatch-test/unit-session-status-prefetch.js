@@ -7,6 +7,8 @@
  * would otherwise let node exit quietly without printing PASS.
  */
 const assert = require('assert');
+const fs = require('fs');
+const path = require('path');
 const { buildStartupPrefetchBlock, PREFETCH_MAX_BYTES } = require('../session-status-hook.js');
 
 const NOW = new Date('2026-09-26T15:50:12.000Z');
@@ -214,6 +216,24 @@ async function main() {
     assert.strictEqual(block.split('\n').pop(), 'janitor=1000 pending merge(s), 1000 stranded dir(s), partial scan');
     assert.ok(!block.includes('\uFFFD'), 'no character was split');
     console.log(`    (worst case ${bytes} bytes)`);
+  });
+
+  // The block is read by /session-start step 0, a string contract no compiler checks. The hook side
+  // is the real output of a PM block with every fact; the skill side is the example block in step 0.
+  await test('session-start step 0 knows the header and every key the block prints', async () => {
+    const skill = fs.readFileSync(path.join(__dirname, '..', '..', 'skills', 'session-start', 'skill.md'), 'utf8');
+    const start = skill.indexOf('### 0. Fast Path');
+    const end = skill.indexOf('### 1. ', start);
+    assert.ok(start >= 0 && end > start, 'step 0 not found in skill.md');
+    const step0 = skill.slice(start, end);
+    const block = await run(ctx(), stub());
+    const [header, ...rest] = block.split('\n');
+    assert.ok(step0.includes(header), `step 0 does not show the header "${header}"`);
+    const keys = rest.filter((l) => /^[a-z_A-Z]+=/.test(l)).map((l) => l.split('=')[0]);
+    assert.ok(keys.length >= 11, `only ${keys.length} keys extracted`);
+    for (const key of keys) {
+      assert.ok(new RegExp(`^${key}=`, 'm').test(step0), `step 0's example block has no ${key}= line`);
+    }
   });
 }
 
