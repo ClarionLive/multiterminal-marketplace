@@ -5,16 +5,5 @@
   "author": {
     "name": "ClarionLive",
     "email": "noreply@multiterminal.dev"
-  },
-  "mcpServers": {
-    "multiterminal-channel": {
-      "command": "node",
-      "args": ["${CLAUDE_PLUGIN_ROOT}/server/multiterminal-channel.mjs"]
-    }
-  },
-  "channels": [
-    {
-      "server": "multiterminal-channel"
-    }
-  ]
+  }
 }
