@@ -22,7 +22,7 @@ claude plugin marketplace update multiterminal-marketplace
 ## Requirements
 
 - **Claude Code** v2.1.139 or newer (the hooks use the `args: string[]` exec form).
-- **Node.js** on your `PATH` — the hooks and the bundled MCP/channel server run under Node. Node 18+ recommended.
+- **Node.js** on your `PATH` — the hooks run under Node. Node 18+ recommended.
 - **Platform:** the plugin bundles a prebuilt native `better-sqlite3` binary for **`win32-x64`** (see below). Other platforms work after a one-line rebuild.
 
 ## Native binary (`better-sqlite3`)
@@ -66,8 +66,6 @@ The resolution order (first hit wins) is: `MT_BETTER_SQLITE3` → bare `better-s
 - **Hooks** — session lifecycle, activity tracking, kanban pipeline triggers, safety guards.
 - **Skills** — `session-start`, `kanban-task`, `project-management`, `program-management`, review/audit/diagnose pipelines, and more.
 - **Agents** — verifier, code-reviewer, security-auditor, debugger, devil's-advocate, and supporting roles.
-- **MCP / channel server** — the `multiterminal-channel` server wired via `plugin.json`.
-
 ## License / ownership
 
 Maintained by **ClarionLive**.

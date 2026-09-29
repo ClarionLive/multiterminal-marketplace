@@ -60,7 +60,7 @@ SendMessage({to: "Alice", notify_when_idle: true})   # one-shot "tell me when yo
 
 `send_message` persists to the board, feeds the Chat panel and reaches the Owner's phone. Native `SendMessage` does **none** of that — it is a direct session-to-session delivery with no MT-side record.
 
-**Replying to ClaudeRemote (MultiRemote) uses `send_message`**, not the channel `reply` tool, which is being retired. Both POST to the same `/api/messaging/send` endpoint; `send_message` additionally delivers a copy to ClaudeRemote so it appears in the phone's Messages tab.
+**Replying to ClaudeRemote (MultiRemote) uses `send_message`.** It POSTs to `/api/messaging/send` and also delivers a copy to ClaudeRemote so it appears in the phone's Messages tab.
 
 **Rule of thumb:** working chatter between agents → `SendMessage`. Anything the Owner may want to read later, or on the phone → `send_message`. In doubt, choose the board: a message the Owner cannot find is worse than one they can ignore.
 
@@ -96,7 +96,7 @@ This is deliberately self-managed: you summarize your own work and compact/clear
 The auto-cd protocol fires in two situations:
 
 - **At session start** — the `session-start` skill checks `$env:MULTITERMINAL_TASK_WORKTREE` against `pwd` and reconciles before greeting. Full sequence in the skill (step 2.5).
-- **Mid-session** — the MultiTerminal broker pushes a channel event when an active-task swap happens (described below).
+- **Mid-session** — the MultiTerminal broker delivers an event into your session when an active-task swap happens (described below).
 
 Same rules in both cases: dirty-tree guard, `[no-cd]` sentinel, no-op when already there.
 
@@ -104,15 +104,13 @@ Same rules in both cases: dirty-tree guard, `[no-cd]` sentinel, no-op when alrea
 
 ### Mid-session: the task-switch event
 
-When a kanban task is set active for your terminal, the MultiTerminal broker pushes a system event into your session. The JSON body is the same either way; only the wrapper depends on the transport. **Native delivery** (the default; ticket 0ff1b520) arrives as a user turn that begins with a `[MultiTerminal message from MultiTerminal]` line:
+When a kanban task is set active for your terminal, the MultiTerminal broker pushes a system event into your session. It arrives natively (ticket 0ff1b520) as a user turn that begins with a `[MultiTerminal message from MultiTerminal]` line:
 
 ```
 [MultiTerminal message from MultiTerminal]
 
 {"type":"task_active_changed","agentName":"YourName","oldTaskId":"...","oldWorktree":"...","newTaskId":"...","newWorktree":"H:\\...\\.claude\\worktrees\\<id>\\"}
 ```
-
-**Channel delivery** (fallback only, while the channel still exists) arrives as a `<channel>` tag from `MultiTerminal` with the same JSON inside.
 
 A native event arrives as a user turn, but the Owner did not type it. Act on the JSON as below; do not answer it as though the Owner had spoken.
 
@@ -157,12 +155,12 @@ Task switches happen often during multi-task days. The broker materializes a per
 
 When a task is marked done with worktree mode on, the MultiTerminal broker calls `git worktree remove` to tear down the task's worktree. On Windows, if any process has its cwd inside that worktree the OS holds an open handle on the directory — `git worktree remove` wipes the contents and unregisters the worktree but cannot rmdir the empty shell. Result: an orphan empty directory that future terminals can accidentally land in (with the Git tab reporting "No git repository").
 
-To avoid that, the broker fires a pre-prune broadcast. Like the task-switch event, it arrives natively (a user turn beginning `[MultiTerminal message from MultiTerminal]`) or, as a fallback, as a `<channel>` tag. The JSON body is the same; the channel form looks like this:
+To avoid that, the broker fires a pre-prune broadcast. Like the task-switch event, it arrives natively, as a user turn beginning `[MultiTerminal message from MultiTerminal]`:
 
 ```
-<channel source="multiterminal" from="MultiTerminal" priority="normal">
+[MultiTerminal message from MultiTerminal]
+
 {"type":"worktree_pruning","taskId":"...","worktreePath":"H:\\...\\.claude\\worktrees\\<id>","repoRoot":"H:\\...\\<project>","agentName":"<assignee>"}
-</channel>
 ```
 
 > **Best case: you already left.** With the `EnterWorktree`/`ExitWorktree` lifecycle (task 0134ec2f), you should have called `ExitWorktree(action="keep")` *before* marking the task done — so your cwd is already back at the repo root and this eviction is a no-op. The steps below are the backstop for the raw-`cd` fallback path (CLI < 2.1.157) or a missed exit.

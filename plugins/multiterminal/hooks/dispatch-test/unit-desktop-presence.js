@@ -2,8 +2,8 @@
 /**
  * Unit test for desktop-presence-hook.run() (ticket 42c91001).
  * Proves the presence-flip decision (post remote-mode off on a real desktop prompt,
- * skip for channel-injected phone prompts) with a spy postRemoteModeOff — never hits
- * :5050. The equivalence harness covers the raw-stdin CLI shim on channel-injected
+ * skip for MT-injected phone prompts) with a spy postRemoteModeOff — never hits
+ * :5050. The equivalence harness covers the raw-stdin CLI shim on the injected
  * branches (which don't post).
  */
 const assert = require('assert');
@@ -17,11 +17,6 @@ async function main() {
   await run({ prompt: 'please refactor the widget' }, { postRemoteModeOff: postSpy });
   assert.strictEqual(posted, 1, 'desktop prompt → post');
 
-  // Channel-injected (phone) prompt → skip the flip.
-  await run({ prompt: '<channel source="plugin:multiterminal:multiterminal-channel" from="Alice">status?</channel>' },
-    { postRemoteModeOff: postSpy });
-  assert.strictEqual(posted, 1, 'channel-injected → NO post');
-
   // Empty/absent prompt → treated as desktop → post.
   await run({}, { postRemoteModeOff: postSpy });
   assert.strictEqual(posted, 2, 'empty prompt → post');
@@ -31,16 +26,18 @@ async function main() {
 
   // ── Native session injection (ticket 0ff1b520 item 4) ──────────────────
   //
-  // These exist because the four assertions ABOVE were all green throughout a
+  // These exist because this file's assertions were all green throughout a
   // real, live failure. Item 4 moved messages onto a named pipe, where they
-  // arrive with NO <channel> tag, and this file only ever tested the tag — so a
-  // phone message looked exactly like keyboard input, the hook flipped remote
-  // mode off on the very message that had just armed it, and the Owner's reply
-  // silently never left the desktop. A passing suite said nothing about it.
+  // arrive with no tag, and this file only ever tested the retired channel
+  // server's <channel> tag — so a phone message looked exactly like keyboard
+  // input, the hook flipped remote mode off on the very message that had just
+  // armed it, and the Owner's reply silently never left the desktop. A passing
+  // suite said nothing about it.
   //
-  // Falsified before being trusted: reverting the marker to the channel-only
-  // regex turns BOTH of the next two assertions red, and no other assertion in
-  // this file changes.
+  // Falsified before being trusted (re-run when the channel alternative was
+  // dropped from the marker): the old channel-only marker fails the first of the
+  // next two assertions, and the native marker without its `m` flag passes that
+  // one and fails the second. The unchanged marker passes all six.
   await run({ prompt: '[MultiTerminal message from MultiRemote]\n\nHi this is from my phone!' },
     { postRemoteModeOff: postSpy });
   assert.strictEqual(posted, 3, 'native-injected → NO post');
@@ -60,7 +57,7 @@ async function main() {
     { postRemoteModeOff: postSpy });
   assert.strictEqual(posted, 4, 'prose merely MENTIONING the wrapper is still desktop typing');
 
-  console.log('desktop-presence run() unit: PASS (7 assertions)');
+  console.log('desktop-presence run() unit: PASS (6 assertions)');
 }
 
 main().catch((e) => { console.error(e); process.exit(1); });

@@ -295,7 +295,7 @@ There are two kinds of team, and they are not interchangeable:
 | | **Subagent team** (5.3a) | **MultiTerminal helper team** (5.3b) |
 |---|---|---|
 | What | Task-tool subagents inside your session | Real terminals in their own panes, via `spawn_helper` |
-| Report back | `SendMessage` to `team-lead` | The MultiTerminal channel (`send_message` / `reply`) |
+| Report back | `SendMessage` to `team-lead` | `send_message`, or native `SendMessage` to your name |
 | Board identity | No | Yes: claims, checklist items, `list_terminals` |
 | Cost | Cheap, fast | A full session each; ~10–30s to boot |
 | Ends | Shutdown protocol | `close_helper` (from the pane that spawned it), or the Owner |
@@ -366,7 +366,7 @@ After spawning, monitor — do NOT code.
 ### 7.1: Event-Driven Monitoring
 Act on incoming agent messages. Refresh task detail after each. If no messages for 2+ minutes, check via `get_task_detail`. If an agent hasn't reported in 5+ minutes, send a status ping.
 
-**Helper team:** reports arrive over the MultiTerminal channel, not as `SendMessage`. Check `get_inbox` for `spawn_failed` too. A helper that hasn't collected its job within a minute or two has probably failed; see `references/helper-teams.md` before resending anything.
+**Helper team:** reports arrive either through `send_message` (your MultiTerminal inbox and the board) or as a native `SendMessage` from the helper by name — never as `SendMessage` to `team-lead`. Check `get_inbox` for `spawn_failed` too. A helper that hasn't collected its job within a minute or two has probably failed; see `references/helper-teams.md` before resending anything.
 
 ### 7.2: Agent Completions
 When an agent reports items done:

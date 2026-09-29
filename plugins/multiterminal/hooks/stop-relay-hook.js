@@ -4,7 +4,7 @@
  *
  * When remote mode is on and the agent stops (waiting for user input),
  * sends a notification to ClaudeRemote so the user knows to respond.
- * The user replies via the ClaudeRemote channel.
+ * The user replies from ClaudeRemote; MT delivers that reply into the session.
  */
 
 const MT_API = process.env.MT_API_URL || 'http://localhost:5050';

@@ -8,7 +8,7 @@
  *
  * Inbox file: %APPDATA%/multiterminal/inbox/{MULTITERMINAL_NAME}.json
  * Format: JSON array of [{id, sender, content, timestamp}]
- *   — the channel POST shape ({from, message, ...}) is accepted too; see the
+ *   — the messaging POST shape ({from, message, ...}) is accepted too; see the
  *     formatMessage() block below for the full key list and why.
  *
  * Behavior:
@@ -34,7 +34,7 @@ const path = require('path');
 // which SILENTLY DROPPED anything it didn't recognise. Three ways to lose a
 // message, none of them leaving a trace:
 //
-//   1. `message` was never accepted. The channel POST shape is
+//   1. `message` was never accepted. The messaging POST shape is
 //      {from, message, ...} — write one of those to the inbox file and it
 //      vanished, because neither `Sender` nor `Content` is present.
 //   2. An EMPTY body is falsy, so `content` failed the `&&` and the message
@@ -44,25 +44,20 @@ const path = require('path');
 //      between "no mail" and "your mail was discarded".
 //
 // Verified live via this hook's own injectable-deps entry point: empty body →
-// nothing surfaced; channel-shaped payload → nothing surfaced; a mixed batch →
+// nothing surfaced; {from, message} payload → nothing surfaced; a mixed batch →
 // the empty message vanished while its siblings rendered, so the loss was
 // invisible even when other mail arrived.
 //
 // A dropped message is the worst outcome available here — worse than an ugly
 // one. Every entry now produces exactly one line.
 //
-// Kept deliberately in sync with server/multiterminal-channel.mjs, which had
-// the mirror-image defect (it rendered the raw envelope instead of dropping).
-// Duplicated rather than shared because that file is an ESM module under
-// server/ with its own package.json and node_modules, while this is CJS under
-// hooks/. If you change the semantics here, change them there too.
-
-// These key lists are IDENTICAL to server/multiterminal-channel.mjs, in the
-// same order, on purpose. An earlier revision let each file lead with its own
-// native shape (`Content` here, `message` there) which silently INVERTED
-// precedence: a payload carrying both keys rendered one thing here and the
-// other on the channel, and each file's tests pinned its own answer, so the
-// suites locked in the disagreement. One order, both files, no exceptions.
+// Key ORDER is precedence, and it is deliberate: the messaging POST shape
+// (`from` / `message`) wins over the inbox-file shape (`Sender` / `Content`)
+// when a payload carries both. An earlier revision led with `Content` here
+// while the (since retired) channel server led with `message`, which silently
+// INVERTED precedence between the two renderers — a payload carrying both keys
+// rendered differently depending on which path delivered it. Do not reorder
+// these lists to "match the local shape"; unit-inbox-check.js D12 pins them.
 const EMPTY_BODY_MARKER = '(empty message — the sender delivered a blank body)';
 const SENDER_KEYS = ['from', 'sender', 'From', 'Sender'];
 const CONTENT_KEYS = ['message', 'content', 'Message', 'Content'];

@@ -5,8 +5,9 @@
  * After any checklist update, checks if ALL items are now in "testing" or "done".
  * If so:
  *   1. Outputs a console message (system reminder) telling the agent to auto-run the pipeline
- *   2. Sends a channel message to the agent via the broker — channel messages are
- *      harder to ignore since they arrive as <channel> tags in the conversation
+ *   2. Sends a message to the agent via the broker (POST /api/messaging/send) — MT
+ *      delivers it into the session as a message turn, which is harder to ignore
+ *      than a hook's stdout
  *
  * Hook type: PostToolUse
  * Matcher: mcp__multiterminal__update_task_checklist
@@ -16,7 +17,7 @@ const http = require('http');
 
 // ── Core (dispatcher-callable) ───────────────────────────────────────
 // Parsed hookData in (CLI shim reads stdin). Injectable getTaskDetail /
-// sendChannelMessage / env so the all-testing-or-done trigger is unit-testable
+// sendMessageToAgent / env so the all-testing-or-done trigger is unit-testable
 // without live REST calls (ticket 42c91001). Gates on toolInput.taskId presence
 // but NOT the exact tool, so under the dispatcher it carries its hooks.json
 // matcher (update_task_checklist) in the TABLE (B′) to keep its original scope.
@@ -25,7 +26,7 @@ const http = require('http');
 async function run(hookData, deps = {}) {
   const env = deps.env || process.env;
   const _getTaskDetail = deps.getTaskDetail || getTaskDetail;
-  const _sendChannelMessage = deps.sendChannelMessage || sendChannelMessage;
+  const _sendMessageToAgent = deps.sendMessageToAgent || sendMessageToAgent;
 
   try {
     const toolInput = (hookData && hookData.tool_input) || {};
@@ -64,11 +65,11 @@ async function run(hookData, deps = {}) {
         `You MUST run the pipeline now — invoke Skill(skill="multiterminal:pipeline") immediately. ` +
         `Do NOT ask the user for permission. The pipeline must pass before presenting items for manual testing.`;
 
-      // Send channel message to the agent — arrives as a <channel> tag
+      // Message the agent too — MT delivers it into the session natively
       const agentName = env.MULTITERMINAL_NAME;
       if (agentName) {
         const taskTitle = taskData.title || taskId;
-        await _sendChannelMessage(agentName, taskId, taskTitle, testingCount, doneCount, checklist.length);
+        await _sendMessageToAgent(agentName, taskId, taskTitle, testingCount, doneCount, checklist.length);
       }
 
       // Console output — system reminder to the agent (console.log added a newline)
@@ -100,10 +101,10 @@ if (require.main === module) {
 }
 
 /**
- * Send a channel message to the agent via the broker's messaging endpoint.
- * This arrives as a <channel> tag which agents treat as external communication.
+ * Send a message to the agent via the broker's messaging endpoint. MT delivers
+ * it into the agent's live session as a message turn.
  */
-function sendChannelMessage(agentName, taskId, taskTitle, testingCount, doneCount, totalCount) {
+function sendMessageToAgent(agentName, taskId, taskTitle, testingCount, doneCount, totalCount) {
   return new Promise((resolve) => {
     const message = `🚨 PIPELINE REQUIRED — All ${totalCount} checklist items on "${taskTitle}" [${taskId}] are in testing (${testingCount}) or done (${doneCount}). ` +
       `Run the pipeline NOW: invoke Skill(skill="multiterminal:pipeline"). Do NOT ask the user — just run it.`;

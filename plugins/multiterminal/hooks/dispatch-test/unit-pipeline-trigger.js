@@ -2,10 +2,10 @@
 /**
  * Unit test for pipeline-trigger-hook.run() (ticket 42c91001).
  *
- * The trigger path fires a live task-detail GET + channel POST, so equivalence
+ * The trigger path fires a live task-detail GET + messaging POST, so equivalence
  * covers only the no-taskId/malformed branches. The all-testing-or-done gate,
- * the AUTO-PIPELINE stdout, and the channel-message dispatch are proven here with
- * injected getTaskDetail + sendChannelMessage.
+ * the AUTO-PIPELINE stdout, and the agent-message dispatch are proven here with
+ * injected getTaskDetail + sendMessageToAgent.
  */
 const assert = require('assert');
 const { run } = require('../pipeline-trigger-hook.js');
@@ -20,20 +20,20 @@ function deps(over = {}) {
     _sends: sends, _gets: gets,
     env: { MULTITERMINAL_NAME: over.name !== undefined ? over.name : 'Henry' },
     getTaskDetail: async (id) => { gets.push(id); return over.taskData !== undefined ? over.taskData : { title: 'Tooling diet', checklist: [{ status: 'testing' }, { status: 'done' }] }; },
-    sendChannelMessage: async (...a) => { sends.push(a); },
+    sendMessageToAgent: async (...a) => { sends.push(a); },
   };
 }
 
 async function main() {
-  // ── 1. all testing/done with ≥1 testing → AUTO-PIPELINE stdout + channel msg ──
+  // ── 1. all testing/done with ≥1 testing → AUTO-PIPELINE stdout + agent msg ──
   {
     const d = deps();
     const r = await run({ tool_input: { taskId: 't1' } }, d);
     ok(r.exitCode === 0, 'exit 0');
     ok(r.stdout && r.stdout.includes('AUTO-PIPELINE TRIGGER'), 'emits trigger reminder');
     ok(r.stdout.endsWith('\n'), 'trailing newline matches console.log');
-    ok(d._sends.length === 1, 'channel message sent');
-    ok(d._sends[0][0] === 'Henry' && d._sends[0][1] === 't1', 'channel msg targets agent + task');
+    ok(d._sends.length === 1, 'agent message sent');
+    ok(d._sends[0][0] === 'Henry' && d._sends[0][1] === 't1', 'agent msg targets agent + task');
   }
 
   // ── 2. no taskId → self-gate, no detail fetch, no stdout ──
@@ -49,7 +49,7 @@ async function main() {
     const d = deps({ taskData: { title: 'T', checklist: [{ status: 'testing' }, { status: 'pending' }] } });
     const r = await run({ tool_input: { taskId: 't1' } }, d);
     ok(!r.stdout, 'pending remains → no trigger');
-    ok(d._sends.length === 0, 'pending remains → no channel msg');
+    ok(d._sends.length === 0, 'pending remains → no agent msg');
   }
 
   // ── 4. all done, none testing → no trigger (already past pipeline) ──
@@ -59,12 +59,12 @@ async function main() {
     ok(!r.stdout, 'all done, no testing → no trigger');
   }
 
-  // ── 5. no agent name → stdout still emitted, but no channel send ──
+  // ── 5. no agent name → stdout still emitted, but no agent send ──
   {
     const d = deps({ name: '' });
     const r = await run({ tool_input: { taskId: 't1' } }, d);
     ok(r.stdout && r.stdout.includes('AUTO-PIPELINE'), 'stdout still emitted');
-    ok(d._sends.length === 0, 'no agent name → no channel send');
+    ok(d._sends.length === 0, 'no agent name → no agent send');
   }
 
   console.log(`pipeline-trigger run() unit: PASS (${passed} assertions)`);
