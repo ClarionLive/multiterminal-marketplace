@@ -666,17 +666,33 @@ function postDisconnect(name) {
  * a way to reach THIS pane's row, so the release it would have done was never this pane's to do.
  * - An unclaimed placeholder pane whose session exits keeps its "Unassigned" row until the pane is
  *   disposed (MainForm unregisters by docId). Consumers filter that name out.
- * - A name CLAIMED from an MT pane (register_terminal renames the pane's own row by docId) is NOT
- *   removed by the liveness reaper: that rename binds no ownerPid, so the row is Unowned and the
- *   reaper skips it. It stays connected, with stale credentials, until the tab closes. Pre-existing;
- *   this hook never released a claimed name. Tracked with the stage-2 session-id keying work.
+ * - A name CLAIMED from an MT pane (register_terminal renames the pane's own row by docId) is
+ *   released only if that row carries an ownerPid, and the rename itself binds none. With the MCP
+ *   server's startup self-registration (task 54005ee7), the launch-name registration binds it first
+ *   and the rename keeps it: observed live 2026-09-29, the claimed row was reaped ~60s after /quit
+ *   with the tab still open. Without 54005ee7 the row is Unowned, the reaper skips it, and it stays
+ *   connected with stale credentials until the tab closes. Pre-existing either way: this hook never
+ *   released a claimed name.
+ *
+ * NOT on /clear either (`reason` is the SessionEnd hook input's reason field; observed values
+ * "clear" and "prompt_input_exit"). /clear ends one session and starts the next in the same terminal
+ * a few seconds later, and that SessionStart re-posts credentials but never re-registers the
+ * terminal. So a disconnect here removed the terminal from MT's roster for good: found live
+ * 2026-09-29, a message to a /clear'ed terminal failed with "Recipient terminal not found". Before
+ * ticket 0ff1b520 retired the channel, its MCP server survived /clear and its 30s heartbeat
+ * re-registered a missing row (startPortHeartbeat in server/multiterminal-channel.mjs, removed in
+ * f560d72), so the gap lasted under 30s and never showed.
  *
  * `deps` exists for the unit test. Returns what it did, for the test and the trace.
  */
-async function releaseOnSessionEnd(terminalName, deps = {}) {
+async function releaseOnSessionEnd(terminalName, reason, deps = {}) {
   if (isSharedPlaceholderName(terminalName)) {
     dtrace('SessionEnd: launch name is the shared placeholder — not disconnecting by name');
     return 'skipped-placeholder';
+  }
+  if (reason === 'clear') {
+    dtrace('SessionEnd: reason is /clear, the terminal continues — not disconnecting');
+    return 'skipped-clear';
   }
   const post = deps.postDisconnect || postDisconnect;
   const fallback = deps.markOffline || ((n) => updateProfileStatus(n, false));
@@ -1373,7 +1389,7 @@ async function main() {
       const sessionId = hookData.session_id;
       updateSessionAgentMap(sessionId, terminalName, false);
 
-      await releaseOnSessionEnd(terminalName);
+      await releaseOnSessionEnd(terminalName, hookData.reason);
       break;
     }
 

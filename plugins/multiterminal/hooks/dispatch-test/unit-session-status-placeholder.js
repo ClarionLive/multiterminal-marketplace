@@ -1,12 +1,17 @@
 #!/usr/bin/env node
 /**
- * Unit test for the shared-placeholder guard in session-status-hook (ticket 0ff1b520, item 13).
+ * Unit test for session-status-hook's SessionStart/SessionEnd release guards (ticket 0ff1b520, items
+ * 13 and 7): the shared placeholder name, and /clear.
  *
  * THE DEFECT, found live 2026-09-29: two unnamed panes both launched as MULTITERMINAL_NAME=
  * "Unassigned". One claimed "Probe" via register_terminal and later quit. Its SessionEnd hook
  * posted disconnect("Unassigned"), the broker resolved that to the FIRST "Unassigned" row, and the
  * OTHER pane's live row was torn down (with its credentials, since item 14). SessionStart had the
  * mirror problem: both panes posted credentials under the one key, the last one winning.
+ *
+ * AND (item 7 check e, same day): /clear's SessionEnd disconnected the terminal by name, and the
+ * next SessionStart never re-registers it, so it vanished from MT's roster. SessionEnd now skips the
+ * release when the hook input's reason is "clear".
  *
  * Asserted BEHAVIOURALLY, by driving the exported functions with stubbed I/O and recording what
  * they tried to send — not by scanning the source, which a comment naming the guard would satisfy.
@@ -17,6 +22,8 @@
  * pattern was asserted to match exactly once. SessionEnd off -> red at 'SessionEnd "Unassigned" ->
  * skipped'; SessionStart off -> red at 'SessionStart "Unassigned" -> skipped'; restored -> green. The
  * run stops at its first failure, so this shows each guard is caught, not that no other assertion moved.
+ * The /clear guard was falsified the same way (`if (reason === 'clear') {` plus its dtrace line,
+ * matched exactly once): off -> red at 'SessionEnd "Charlie" on /clear -> skipped'; restored -> green.
  *
  * WHAT THIS DOES NOT COVER (pipeline run 1, adversary): it drives the exported functions, not main().
  * Reverting main()'s SessionStart/SessionEnd branches to inline POSTs, or dropping the calls, would stay
@@ -72,17 +79,36 @@ function recorder(result) {
   for (const name of ['Unassigned', 'unassigned']) {
     const post = recorder(true);
     const offline = recorder(undefined);
-    const r = await releaseOnSessionEnd(name, { postDisconnect: post, markOffline: offline });
+    const r = await releaseOnSessionEnd(name, 'prompt_input_exit', { postDisconnect: post, markOffline: offline });
     check(r, 'skipped-placeholder', `SessionEnd "${name}" -> skipped`);
     check(post.calls.length, 0, `SessionEnd "${name}" -> no disconnect POST (would hit another pane's row)`);
     check(offline.calls.length, 0, `SessionEnd "${name}" -> no fallback profile write either`);
+  }
+
+  // ── 2b. SessionEnd on /clear: the terminal continues, so never disconnect it ─────────────────
+  // Found live 2026-09-29 (item 7 check e): /clear's SessionEnd disconnected the terminal, the next
+  // SessionStart re-posted credentials but never re-registered, and messages then failed with
+  // "Recipient terminal not found". The reason values are the ones observed in the hook's input.
+  {
+    const post = recorder(true);
+    const offline = recorder(undefined);
+    check(await releaseOnSessionEnd('Charlie', 'clear', { postDisconnect: post, markOffline: offline }), 'skipped-clear', 'SessionEnd "Charlie" on /clear -> skipped');
+    check(post.calls.length, 0, 'SessionEnd on /clear -> no disconnect POST (would drop the terminal from the roster)');
+    check(offline.calls.length, 0, 'SessionEnd on /clear -> no fallback offline write either');
+  }
+  // Every other reason is a real exit and still releases, including an absent reason field.
+  for (const reason of ['prompt_input_exit', 'logout', 'other', undefined]) {
+    const post = recorder(true);
+    const offline = recorder(undefined);
+    check(await releaseOnSessionEnd('Charlie', reason, { postDisconnect: post, markOffline: offline }), 'disconnected', `SessionEnd "Charlie" reason=${reason} -> disconnected`);
+    check(post.calls, [['Charlie']], `SessionEnd reason=${reason} -> one disconnect POST, for Charlie`);
   }
 
   // A real name still disconnects — the guard must not swallow the normal path.
   {
     const post = recorder(true);
     const offline = recorder(undefined);
-    check(await releaseOnSessionEnd('Alice', { postDisconnect: post, markOffline: offline }), 'disconnected', 'SessionEnd "Alice" -> disconnected');
+    check(await releaseOnSessionEnd('Alice', 'prompt_input_exit', { postDisconnect: post, markOffline: offline }), 'disconnected', 'SessionEnd "Alice" -> disconnected');
     check(post.calls, [['Alice']], 'SessionEnd "Alice" -> exactly one disconnect POST, for Alice');
     check(offline.calls.length, 0, 'SessionEnd "Alice", API ok -> no fallback');
   }
@@ -90,13 +116,13 @@ function recorder(result) {
   {
     const post = recorder(false);
     const offline = recorder(undefined);
-    check(await releaseOnSessionEnd('Alice', { postDisconnect: post, markOffline: offline }), 'fallback', 'SessionEnd "Alice", API refused -> fallback');
+    check(await releaseOnSessionEnd('Alice', 'prompt_input_exit', { postDisconnect: post, markOffline: offline }), 'fallback', 'SessionEnd "Alice", API refused -> fallback');
     check(offline.calls, [['Alice']], 'fallback marks Alice offline');
   }
   {
     const post = recorder(new Error('boom'));
     const offline = recorder(undefined);
-    check(await releaseOnSessionEnd('Alice', { postDisconnect: post, markOffline: offline }), 'fallback', 'SessionEnd "Alice", POST throws -> fallback, not a crash');
+    check(await releaseOnSessionEnd('Alice', 'prompt_input_exit', { postDisconnect: post, markOffline: offline }), 'fallback', 'SessionEnd "Alice", POST throws -> fallback, not a crash');
     check(offline.calls, [['Alice']], 'throwing POST still falls back');
   }
 
