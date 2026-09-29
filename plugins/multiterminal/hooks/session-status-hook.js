@@ -546,6 +546,10 @@ function probeSpawnJobStatus(docId, timeoutMs = 2000) {
  * published. If a CLI upgrade changes it, this refuses and says so in one dtrace line. A
  * loose check would instead keep "succeeding" while posting junk.
  *
+ * MIRRORED in MultiTerminal's mcp/index.js (messagingCredentialsFromEnv), which posts the same
+ * credentials when a session claims its name after startup. The two ship separately and cannot
+ * share code; change both shape checks together.
+ *
  * Returns { socket, token } when BOTH are present and well-formed, else null. Never throws.
  */
 function messagingCredentials(env) {
