@@ -102,19 +102,23 @@ Same rules in both cases: dirty-tree guard, `[no-cd]` sentinel, no-op when alrea
 
 > **Invariant — do NOT mode-detect (task 4bcd1e24).** When worktree mode is on, an **eligible** active task (one whose project resolves to a real path) **always has a worktree** — eligibility, not when the task was created, is the sole determinant. `get_active_worktree` is read-or-create: it materializes a missing worktree for an already-active eligible task on demand (backfill), so there is no "this task predates worktrees / was activated before mode was on" branch to reason about. A **null/empty** worktree therefore means the task is genuinely **ineligible** (worktree mode off, or no resolvable project) — those follow the one documented repo-root path: work and commit on your current branch; MT runs no git automation for them.
 
-### Mid-session: the channel event
+### Mid-session: the task-switch event
 
-When a kanban task is set active for your terminal, the MultiTerminal broker pushes a system event to your Claude Code Channel. It appears in your conversation as a `<channel>` tag from `MultiTerminal`:
+When a kanban task is set active for your terminal, the MultiTerminal broker pushes a system event into your session. The JSON body is the same either way; only the wrapper depends on the transport. **Native delivery** (the default; ticket 0ff1b520) arrives as a user turn that begins with a `[MultiTerminal message from MultiTerminal]` line:
 
 ```
-<channel source="multiterminal" from="MultiTerminal" priority="normal">
+[MultiTerminal message from MultiTerminal]
+
 {"type":"task_active_changed","agentName":"YourName","oldTaskId":"...","oldWorktree":"...","newTaskId":"...","newWorktree":"H:\\...\\.claude\\worktrees\\<id>\\"}
-</channel>
 ```
+
+**Channel delivery** (fallback only, while the channel still exists) arrives as a `<channel>` tag from `MultiTerminal` with the same JSON inside.
+
+A native event arrives as a user turn, but the Owner did not type it. Act on the JSON as below; do not answer it as though the Owner had spoken.
 
 When you see this event, react before doing any other work:
 
-1. **Parse the JSON** in the channel body. If `type` isn't `task_active_changed`, ignore (treat as a regular message). Confirm `agentName` matches your terminal name.
+1. **Parse the JSON** in the message body. If `type` isn't `task_active_changed`, ignore (treat as a regular message). Confirm `agentName` matches your terminal name.
 2. **If `newWorktree` is null/empty** → no-op. The new task is **ineligible** (worktree mode off, or no resolvable project), so it has no worktree by design — not a transient gap. Stay at the repo root and work there; don't try to "find" a worktree for it.
 3. **If `newWorktree` equals your current `pwd`** → no-op. Already there.
 4. **Check for dirty state** at your current cwd:
@@ -153,7 +157,7 @@ Task switches happen often during multi-task days. The broker materializes a per
 
 When a task is marked done with worktree mode on, the MultiTerminal broker calls `git worktree remove` to tear down the task's worktree. On Windows, if any process has its cwd inside that worktree the OS holds an open handle on the directory — `git worktree remove` wipes the contents and unregisters the worktree but cannot rmdir the empty shell. Result: an orphan empty directory that future terminals can accidentally land in (with the Git tab reporting "No git repository").
 
-To avoid that, the broker fires a pre-prune broadcast. It appears in your conversation as a `<channel>` tag:
+To avoid that, the broker fires a pre-prune broadcast. Like the task-switch event, it arrives natively (a user turn beginning `[MultiTerminal message from MultiTerminal]`) or, as a fallback, as a `<channel>` tag. The JSON body is the same; the channel form looks like this:
 
 ```
 <channel source="multiterminal" from="MultiTerminal" priority="normal">
