@@ -111,7 +111,7 @@ If `get_my_active_task` returned a task, the agent may be sitting outside the ac
 
 **On task completion (exit):** before marking the task done (which triggers MT's worktree prune), if you entered via `EnterWorktree`, call `ExitWorktree(action="keep")` to return the process cwd to the repo root. This is what lets MT's `git worktree remove` succeed — a shell can't remove its own cwd. Use `"keep"` (not `"remove"`): MT owns the prune, branch merge, and auto-commit; `ExitWorktree` only removes worktrees IT created, and won't touch a path-entered one anyway.
 
-This is the session-start analog of the `task_active_changed` channel event (full protocol in the plugin CLAUDE.md). Same rules; this one fires once at session boot instead of on every task switch.
+This is the session-start analog of the `task_active_changed` event (native or channel; full protocol in the plugin CLAUDE.md). Same rules; this one fires once at session boot instead of on every task switch.
 
 ### 3. Brief Greeting + Context Summary
 
