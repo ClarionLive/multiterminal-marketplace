@@ -972,7 +972,7 @@ async function main() {
       dtrace('STEP 3: updateSessionAgentMap done');
 
       // Ticket 0ff1b520 item 3: hand this session's native messaging ingress to the broker, so
-      // MT can deliver to a session directly instead of through the development channel.
+      // MT can deliver straight into the live session.
       // Presence and length only in the trace — never the values. Failure is non-fatal by
       // design: a terminal whose credentials never arrive simply keeps the existing paths.
       const creds = messagingCredentials(process.env);
@@ -990,8 +990,9 @@ async function main() {
         console.log(`Spawned by: ${spawnerName}`);
 
         // Task 8b270b37: a spawned helper COLLECTS its job; MT no longer pushes it. Both push paths
-        // lost jobs silently (typed: the submit became a newline in the composer; channel: a message
-        // sent before Claude Code started listening was dropped while the channel server answered 200).
+        // lost jobs silently (typed: the submit became a newline in the composer; the since-retired
+        // channel: a message sent before Claude Code started listening was dropped while the channel
+        // server answered 200).
         //
         // The job itself is NOT printed here: hook output is cut to a ~2KB preview and a job can be
         // 16,000 chars. This only asks MT whether a job is waiting, using a read-only status route

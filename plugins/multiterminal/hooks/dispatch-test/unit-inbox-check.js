@@ -71,11 +71,11 @@ assert.strictEqual(r6.stdout, undefined, 'empty inbox → no stdout');
 let d2 = 0;
 function chk(cond, msg) { assert.ok(cond, msg); d2++; }
 
-// D1: the channel POST shape ({from, message}) was never accepted — `message`
+// D1: the messaging POST shape ({from, message}) was never accepted — `message`
 // was not in the key list and `Sender`/`sender` were absent. It vanished.
 {
-  const line = formatMessage({ from: 'Diana', message: 'channel-shaped payload' });
-  chk(line === '[Diana]: channel-shaped payload', `D1 channel shape must render, got ${JSON.stringify(line)}`);
+  const line = formatMessage({ from: 'Diana', message: 'from/message payload' });
+  chk(line === '[Diana]: from/message payload', `D1 from/message shape must render, got ${JSON.stringify(line)}`);
 }
 
 // D2: an EMPTY body is falsy, so it failed the `&&` and the message was dropped
@@ -85,8 +85,8 @@ function chk(cond, msg) { assert.ok(cond, msg); d2++; }
   chk(line.startsWith('[Diana]: (empty message'), `D2 empty body must render a marker, got ${JSON.stringify(line)}`);
 }
 
-// D3: whitespace-only counts as empty — matches the channel server and MT's own
-// store-side IsNullOrWhiteSpace guard (commit 6f89d11), so all three agree.
+// D3: whitespace-only counts as empty — matches MT's own store-side
+// IsNullOrWhiteSpace guard (commit 6f89d11), so the two agree.
 {
   const line = formatMessage({ sender: 'Diana', content: '   \n\t ' });
   chk(line.startsWith('[Diana]: (empty message'), `D3 whitespace body must render a marker, got ${JSON.stringify(line)}`);
@@ -158,17 +158,16 @@ function chk(cond, msg) { assert.ok(cond, msg); d2++; }
 
 // ── Pipeline Run 1 findings (adversary HIGH + debugger MEDIUM/LOW) ───────────
 
-// D12: key precedence is now IDENTICAL to server/multiterminal-channel.mjs.
-// Previously the hook led with `Content` and the channel with `message`, so a
-// payload carrying both rendered DIFFERENTLY on each path — and each file's
-// tests pinned its own answer, locking in the disagreement. This case and the
-// channel suite's B12 must always agree; if someone re-inverts one list, they
-// disagree and the drift is caught.
+// D12: key precedence — the messaging POST shape wins. Previously the hook led
+// with `Content` while the (since retired) channel server led with `message`, so
+// a payload carrying both rendered DIFFERENTLY on each delivery path — and each
+// file's tests pinned its own answer, locking in the disagreement. The channel
+// server is gone, but the order stays: re-inverting a list turns this red.
 {
   chk(formatMessage({ sender: 'Bob', message: 'from message', Content: 'from Content' }) === '[Bob]: from message',
-    'D12 body precedence: message > Content (same order as the channel)');
+    'D12 body precedence: message > Content');
   chk(formatMessage({ from: 'Bob', Sender: 'NotBob', content: 'x' }) === '[Bob]: x',
-    'D12 sender precedence: from > Sender (same order as the channel)');
+    'D12 sender precedence: from > Sender');
 }
 
 // D13: an object-valued body must not become "[object Object]" — that silently
