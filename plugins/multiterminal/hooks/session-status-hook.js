@@ -587,6 +587,110 @@ function messagingCredentials(env) {
   }
 }
 
+// The name MT launches an as-yet-unnamed pane under (MainForm's Open PowerShell and placeholder
+// registrations). MANY panes hold it at once, so it is not an address: the broker resolves a
+// name-keyed call to the FIRST matching row. Found live 2026-09-29 (ticket 0ff1b520, item 13):
+// a pane that had claimed "Probe" via register_terminal still carried MULTITERMINAL_NAME=Unassigned,
+// and its SessionEnd disconnect("Unassigned") tore down ANOTHER pane's live row and, since item 14,
+// its credentials. MIRRORED in MultiTerminal's mcp/index.js (PLACEHOLDER_TERMINAL_NAME), which
+// refuses to release this name for the same reason. Case-insensitive, matching the broker's
+// OrdinalIgnoreCase name keys.
+const PLACEHOLDER_TERMINAL_NAME = 'Unassigned';
+
+function isSharedPlaceholderName(name) {
+  return typeof name === 'string' && name.toUpperCase() === PLACEHOLDER_TERMINAL_NAME.toUpperCase();
+}
+
+/**
+ * SessionStart: posts this session's ingress credentials under its launch name.
+ *
+ * NOT under the shared placeholder: every unnamed pane would post under the same key, the last
+ * one winning, so "Unassigned" would route to an arbitrary pane. Such a session posts under its
+ * real name when it claims one (register_terminal, in the MCP server).
+ *
+ * Presence and length only in the trace, never the values. `deps` exists for the unit test.
+ * Returns what it did.
+ */
+async function postSessionStartCredentials(terminalName, sessionId, env, deps = {}) {
+  if (isSharedPlaceholderName(terminalName)) {
+    dtrace('STEP 3c: launch name is the shared placeholder — not posting messaging credentials');
+    return 'skipped-placeholder';
+  }
+  const creds = messagingCredentials(env);
+  if (!creds) {
+    dtrace('STEP 3c: no usable messaging credentials in env — skipping');
+    return 'no-credentials';
+  }
+  const post = deps.postCredentials || postMessagingCredentials;
+  const posted = await post(terminalName, sessionId, creds);
+  dtrace(`STEP 3c: messaging credentials present (socket len=${creds.socket.length}, token len=${creds.token.length}), posted=${posted}`);
+  return posted ? 'posted' : 'post-failed';
+}
+
+// POST /api/messaging/disconnect for `name`. Resolves true on a 200, false otherwise; never throws.
+function postDisconnect(name) {
+  return new Promise((resolve) => {
+    try {
+      const http = require('http');
+      const postData = JSON.stringify({ name });
+      const req = http.request({
+        hostname: 'localhost',
+        port: 5050,
+        path: '/api/messaging/disconnect',
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(postData) },
+        timeout: 3000
+      }, (res) => {
+        resolve(res.statusCode === 200);
+      });
+      req.on('error', () => resolve(false));
+      req.on('timeout', () => { req.destroy(); resolve(false); });
+      req.write(postData);
+      req.end();
+    } catch (_e) {
+      // API not reachable
+      resolve(false);
+    }
+  });
+}
+
+/**
+ * SessionEnd release: disconnect this terminal by name (updates in-memory state + database +
+ * broadcasts), falling back to a direct DB profile update if the API is down.
+ *
+ * NEVER for the shared placeholder (see isSharedPlaceholderName): that disconnect lands on the
+ * first "Unassigned" row, which is another live pane's whenever this one has since claimed a real
+ * name.
+ *
+ * What skipping it costs, stated rather than assumed (pipeline run 1, debugger): the name was never
+ * a way to reach THIS pane's row, so the release it would have done was never this pane's to do.
+ * - An unclaimed placeholder pane whose session exits keeps its "Unassigned" row until the pane is
+ *   disposed (MainForm unregisters by docId). Consumers filter that name out.
+ * - A name CLAIMED from an MT pane (register_terminal renames the pane's own row by docId) is NOT
+ *   removed by the liveness reaper: that rename binds no ownerPid, so the row is Unowned and the
+ *   reaper skips it. It stays connected, with stale credentials, until the tab closes. Pre-existing;
+ *   this hook never released a claimed name. Tracked with the stage-2 session-id keying work.
+ *
+ * `deps` exists for the unit test. Returns what it did, for the test and the trace.
+ */
+async function releaseOnSessionEnd(terminalName, deps = {}) {
+  if (isSharedPlaceholderName(terminalName)) {
+    dtrace('SessionEnd: launch name is the shared placeholder — not disconnecting by name');
+    return 'skipped-placeholder';
+  }
+  const post = deps.postDisconnect || postDisconnect;
+  const fallback = deps.markOffline || ((n) => updateProfileStatus(n, false));
+  let disconnected = false;
+  try {
+    disconnected = await post(terminalName);
+  } catch (_e) {
+    disconnected = false;
+  }
+  if (disconnected) return 'disconnected';
+  fallback(terminalName);
+  return 'fallback';
+}
+
 /**
  * Hands the ingress credentials to MT's broker (ticket 0ff1b520, item 3).
  *
@@ -966,8 +1070,12 @@ async function main() {
     case 'SessionStart': {
       dtrace(`STEP 1: Entered SessionStart branch for ${terminalName}`);
 
-      // Mark profile online
-      updateProfileStatus(terminalName, true);
+      // Mark profile online. Not for the shared placeholder: the broker deliberately never creates
+      // an "Unassigned" profile, and since SessionEnd no longer releases that name, nothing would
+      // ever mark it offline again (pipeline run 1, debugger).
+      if (!isSharedPlaceholderName(terminalName)) {
+        updateProfileStatus(terminalName, true);
+      }
       dtrace('STEP 2: updateProfileStatus done');
 
       // Map this session to the terminal agent name
@@ -977,15 +1085,9 @@ async function main() {
 
       // Ticket 0ff1b520 item 3: hand this session's native messaging ingress to the broker, so
       // MT can deliver straight into the live session.
-      // Presence and length only in the trace — never the values. Failure is non-fatal by
-      // design: a terminal whose credentials never arrive simply keeps the existing paths.
-      const creds = messagingCredentials(process.env);
-      if (creds) {
-        const posted = await postMessagingCredentials(terminalName, sessionId, creds);
-        dtrace(`STEP 3c: messaging credentials present (socket len=${creds.socket.length}, token len=${creds.token.length}), posted=${posted}`);
-      } else {
-        dtrace('STEP 3c: no usable messaging credentials in env — skipping');
-      }
+      // Failure is non-fatal by design: a terminal whose credentials never arrive simply keeps
+      // the existing paths.
+      await postSessionStartCredentials(terminalName, sessionId, process.env);
 
       // Skip kanban/plan context for spawned agents (they have specific tasks from spawner)
       // But NOT on /clear — user explicitly wants a fresh start with session-start menu
@@ -1271,35 +1373,7 @@ async function main() {
       const sessionId = hookData.session_id;
       updateSessionAgentMap(sessionId, terminalName, false);
 
-      // Call the REST API to properly disconnect (updates in-memory state + database + broadcasts)
-      let disconnected = false;
-      try {
-        const http = require('http');
-        const postData = JSON.stringify({ name: terminalName });
-        disconnected = await new Promise((resolve) => {
-          const req = http.request({
-            hostname: 'localhost',
-            port: 5050,
-            path: '/api/messaging/disconnect',
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(postData) },
-            timeout: 3000
-          }, (res) => {
-            resolve(res.statusCode === 200);
-          });
-          req.on('error', () => resolve(false));
-          req.on('timeout', () => { req.destroy(); resolve(false); });
-          req.write(postData);
-          req.end();
-        });
-      } catch (e) {
-        // API not reachable
-      }
-
-      // Fallback to direct DB update if API is not available
-      if (!disconnected) {
-        updateProfileStatus(terminalName, false);
-      }
+      await releaseOnSessionEnd(terminalName);
       break;
     }
 
@@ -1318,4 +1392,4 @@ if (require.main === module) {
   });
 }
 
-module.exports = { resolveHookProjectId, projectManagerRoleLines, messagingCredentials, buildStartupPrefetchBlock, PREFETCH_MAX_BYTES };
+module.exports = { resolveHookProjectId, projectManagerRoleLines, messagingCredentials, buildStartupPrefetchBlock, PREFETCH_MAX_BYTES, isSharedPlaceholderName, releaseOnSessionEnd, postSessionStartCredentials };
