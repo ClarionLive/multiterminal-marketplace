@@ -24,6 +24,7 @@
  */
 
 const path = require('path');
+const { isClarionEmbedded } = require('./embedded-session.js');
 
 // leaf spec: { name, mod (require path) OR run (fn, for tests), head: 'sync'|'async' }
 //
@@ -154,6 +155,29 @@ const STANDALONE = {
     'SessionStart (matcher: compact). Once-per-compaction; does not self-gate on source — kept dispatcher-free (ruling C).',
 };
 
+// CLARION ASSISTANT ALLOWLIST (ticket 9a731cda). A ClarionAssistant tab is a Claude Code session
+// hosted in the Clarion IDE, not an MT pane, but it sets MULTITERMINAL_NAME, so the CLI entry's
+// MT-only guard lets it through. The Owner's decision is that CA tabs get MESSAGING ONLY from this
+// plugin, and the plugin's one messaging job there is the inbox fallback. Every other leaf was
+// found wrong in CA: desktop-presence switched off MT's phone remote mode on every CA prompt,
+// session-save/active-context overwrote CA's ACTIVE-CONTEXT.md with another agent's task,
+// subagent-office added office avatars, pipeline-trigger named a Skill CA lacks, and
+// activity/notification/ask-user-relay wrote MT activity rows and Attention cards. safety-hook
+// is dropped too (Owner-accepted: CA gets no MT permission prompts).
+//
+// An ALLOWLIST, not a denylist, so a leaf added to TABLE later is OFF in CA until someone decides
+// otherwise. Pinned by dispatch-test/unit-dispatch-embedded.js against the real TABLE.
+const CA_ALLOWED_LEAVES = Object.freeze(['inbox-check-hook']);
+
+// Pure: which of `leaves` may run in the session described by `env`. Non-embedded sessions keep
+// every leaf, in order; embedded ones keep only CA_ALLOWED_LEAVES. Applied inside dispatch() so the
+// CLI path and the tests go through the same filter.
+function selectLeavesForEnv(leaves, env, allowed = CA_ALLOWED_LEAVES) {
+  const list = Array.isArray(leaves) ? leaves : [];
+  if (!isClarionEmbedded(env)) return list;
+  return list.filter((l) => l && allowed.includes(l.name));
+}
+
 function resolveRun(leaf) {
   if (typeof leaf.run === 'function') return leaf.run;
   // eslint-disable-next-line global-require
@@ -189,8 +213,11 @@ function isDecision(s) {
   }
 }
 
-async function dispatch(eventName, head, hookData, table = TABLE) {
-  const leaves = (table[eventName] || []).filter((l) => l.head === head);
+// `env` is the session environment the embedded filter reads. It defaults to an EMPTY object, not
+// process.env, so tests that call dispatch() directly stay independent of the ambient environment;
+// the CLI entry (runCli) passes process.env explicitly.
+async function dispatch(eventName, head, hookData, table = TABLE, env = {}) {
+  const leaves = selectLeavesForEnv((table[eventName] || []).filter((l) => l.head === head), env);
   const opts = { hookType: eventName };
 
   if (head === 'async') {
@@ -225,37 +252,47 @@ async function dispatch(eventName, head, hookData, table = TABLE) {
   return { exitCode: 0, stdout };
 }
 
-module.exports = { dispatch, TABLE, STANDALONE };
+// The CLI entry, with its I/O injected so a test can drive the real path (MT-only guard, stdin
+// parse, dispatch with the session env) without spawning a process or reaching localhost:5050.
+// Returns the exit code; the caller exits.
+async function runCli({ argv = process.argv, env = process.env, readStdin, write = (s) => process.stdout.write(s), writeErr = (s) => process.stderr.write(s), table = TABLE } = {}) {
+  // MT-ONLY (task c9285d2a). This dispatcher is registered for ~12 events, so under
+  // --plugin-dir it runs only in terminals MT launched. Once the plugin is installed at USER
+  // SCOPE it would run in EVERY Claude Code session on the machine, and none of its leaves
+  // belong there: 10 of the 15 address MultiTerminal's broker on localhost:5050 by agent name
+  // and have nothing to say without one, while the self-contained ones (safety-hook's
+  // deny/ask policy, inbox-check's stop decision) would quietly extend MT's behaviour to
+  // projects that never opted into it.
+  //
+  // Bail before any leaf runs. This preserves today's behaviour for non-MT sessions exactly,
+  // rather than granting them a policy they have never had.
+  //
+  // A ClarionAssistant tab passes this guard (it sets MULTITERMINAL_NAME); dispatch() then
+  // narrows it to CA_ALLOWED_LEAVES because `env` is passed through below.
+  if (!env.MULTITERMINAL_NAME) return 0;
+
+  const eventName = argv[2] || '';
+  const head = argv[3] || 'sync';
+  const input = readStdin ? await readStdin() : '';
+  let hookData;
+  try { hookData = input.trim() ? JSON.parse(input) : {}; } catch (e) { return 0; }
+  const { exitCode, stdout, stderr } = await dispatch(eventName, head, hookData, table, env);
+  if (stdout) write(stdout + '\n');
+  if (stderr) writeErr(stderr);
+  return exitCode || 0;
+}
+
+module.exports = { dispatch, runCli, selectLeavesForEnv, CA_ALLOWED_LEAVES, TABLE, STANDALONE };
 
 if (require.main === module) {
   (async () => {
-    // MT-ONLY (task c9285d2a). This dispatcher is registered for ~12 events, so under
-    // --plugin-dir it runs only in terminals MT launched. Once the plugin is installed at USER
-    // SCOPE it would run in EVERY Claude Code session on the machine, and none of its leaves
-    // belong there: 10 of the 15 address MultiTerminal's broker on localhost:5050 by agent name
-    // and have nothing to say without one, while the self-contained ones (safety-hook's
-    // deny/ask policy, inbox-check's stop decision) would quietly extend MT's behaviour to
-    // projects that never opted into it.
-    //
-    // Bail before any leaf runs. This preserves today's behaviour for non-MT sessions exactly,
-    // rather than granting them a policy they have never had.
-    //
-    // The guard is on the CLI entry, NOT inside dispatch(): dispatch() is exported and driven
-    // directly by dispatch-test, which must stay independent of the ambient environment.
-    if (!process.env.MULTITERMINAL_NAME) {
-      process.exit(0);
-      return;
-    }
-
-    const eventName = process.argv[2] || '';
-    const head = process.argv[3] || 'sync';
-    let input = '';
-    for await (const chunk of process.stdin) { input += chunk; }
-    let hookData;
-    try { hookData = input.trim() ? JSON.parse(input) : {}; } catch (e) { process.exit(0); return; }
-    const { exitCode, stdout, stderr } = await dispatch(eventName, head, hookData);
-    if (stdout) process.stdout.write(stdout + '\n');
-    if (stderr) process.stderr.write(stderr);
-    process.exit(exitCode || 0);
+    const code = await runCli({
+      readStdin: async () => {
+        let input = '';
+        for await (const chunk of process.stdin) { input += chunk; }
+        return input;
+      },
+    });
+    process.exit(code);
   })().catch(() => process.exit(0));
 }

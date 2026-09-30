@@ -12,6 +12,7 @@ const fs = require('fs');
 const path = require('path');
 const os = require('os');
 const http = require('http');
+const { isClarionEmbedded } = require('./embedded-session.js');
 
 const DB_PATH = path.join(
   process.env.APPDATA || path.join(os.homedir(), 'AppData', 'Roaming'),
@@ -29,6 +30,12 @@ const DB_PATH = path.join(
 function run(hookData, deps = {}) {
   const _fs = deps.fs || fs;
   const env = deps.env || process.env;
+  // ClarionAssistant tab (ticket 9a731cda): print nothing. The block below re-injects MT rules, an
+  // MT kanban task and "You are <name>" after compaction; a CA tab is not an MT agent and gets
+  // messaging only from this plugin.
+  if (isClarionEmbedded(env)) {
+    return { exitCode: 0, stdout: '' };
+  }
   const cwd = deps.cwd || process.cwd();
   const dbPath = deps.dbPath || DB_PATH;
   // Lazy default require mirrors the original (resolved inside the try below).
