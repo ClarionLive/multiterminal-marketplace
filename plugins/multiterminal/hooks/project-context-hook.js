@@ -13,6 +13,7 @@ const http = require('http');
 const { execSync } = require('child_process');
 const fs = require('fs');
 const path = require('path');
+const { isClarionEmbedded } = require('./embedded-session.js');
 
 /**
  * Auto-install the multiterminal plugin if not already installed.
@@ -227,6 +228,13 @@ async function run(hookData, deps = {}) {
   const _ensurePluginInstalled = deps.ensurePluginInstalled || ensurePluginInstalled;
   const _fetchProjectContext = deps.fetchProjectContext || fetchProjectContext;
   const env = deps.env || process.env;
+
+  // ClarionAssistant tab (ticket 9a731cda): return before anything else. This hook's first act is
+  // `claude plugin install ... --scope project` into the cwd plus a marker file, which would install
+  // MT's plugin into whatever Clarion project the IDE tab is open on. CA tabs get messaging only.
+  if (isClarionEmbedded(env)) {
+    return { exitCode: 0 };
+  }
 
   const hookType = hookData && (hookData.hook_type || hookData.type);
 

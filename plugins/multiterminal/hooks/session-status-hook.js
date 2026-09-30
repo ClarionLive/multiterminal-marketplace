@@ -8,6 +8,7 @@
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
+const { isClarionEmbedded } = require('./embedded-session.js');
 
 const DB_PATH = path.join(process.env.APPDATA || '', 'multiterminal', 'multiterminal.db');
 
@@ -602,6 +603,23 @@ function isSharedPlaceholderName(name) {
 }
 
 /**
+ * Who owns the credentials being posted (ticket 9a731cda hardening; the plan's rule for every MT
+ * credential poster). MT rejects a PRESENT-but-wrong launch nonce and requires an ownerPid for a
+ * pid-owned row, so sending both is always correct:
+ *   - nonce: MULTITERMINAL_LAUNCH_NONCE when MT launched this pane with one; omitted otherwise.
+ *   - ownerPid: this hook's parent. Measured by a live spike (2026-09-29): an args-form hook's
+ *     process.ppid is claude.exe, the process whose death MT's reaper watches.
+ * The nonce is a credential too: it is never traced, only its presence.
+ */
+function credentialOwner(env, ppid) {
+  const owner = {};
+  const nonce = env && typeof env.MULTITERMINAL_LAUNCH_NONCE === 'string' ? env.MULTITERMINAL_LAUNCH_NONCE : '';
+  if (nonce) owner.nonce = nonce;
+  if (Number.isInteger(ppid) && ppid > 0) owner.ownerPid = ppid;
+  return owner;
+}
+
+/**
  * SessionStart: posts this session's ingress credentials under its launch name.
  *
  * NOT under the shared placeholder: every unnamed pane would post under the same key, the last
@@ -622,8 +640,9 @@ async function postSessionStartCredentials(terminalName, sessionId, env, deps = 
     return 'no-credentials';
   }
   const post = deps.postCredentials || postMessagingCredentials;
-  const posted = await post(terminalName, sessionId, creds);
-  dtrace(`STEP 3c: messaging credentials present (socket len=${creds.socket.length}, token len=${creds.token.length}), posted=${posted}`);
+  const owner = credentialOwner(env, deps.ownerPid === undefined ? process.ppid : deps.ownerPid);
+  const posted = await post(terminalName, sessionId, creds, owner);
+  dtrace(`STEP 3c: messaging credentials present (socket len=${creds.socket.length}, token len=${creds.token.length}, nonce=${owner.nonce ? 'present' : 'absent'}, ownerPid=${owner.ownerPid || 'none'}), posted=${posted}`);
   return posted ? 'posted' : 'post-failed';
 }
 
@@ -707,6 +726,23 @@ async function releaseOnSessionEnd(terminalName, reason, deps = {}) {
   return 'fallback';
 }
 
+// The POST /api/messaging/credentials body. Pure, so the payload shape is pinned directly
+// (unit-messaging-credentials-owner.js); nonce/ownerPid appear only when credentialOwner set them.
+// MIRRORED in MultiTerminal's mcp/index.js (postClaimedCredentials), which builds the same body for
+// sessions that claim their name after startup. The two ship separately and cannot share code;
+// change both field sets together.
+function credentialsBody(terminalName, sessionId, creds, owner) {
+  const body = {
+    name: terminalName,
+    sessionId: sessionId || '',
+    socket: creds.socket,
+    token: creds.token,
+  };
+  if (owner && owner.nonce) body.nonce = owner.nonce;
+  if (owner && owner.ownerPid) body.ownerPid = owner.ownerPid;
+  return body;
+}
+
 /**
  * Hands the ingress credentials to MT's broker (ticket 0ff1b520, item 3).
  *
@@ -720,19 +756,14 @@ async function releaseOnSessionEnd(terminalName, reason, deps = {}) {
  *
  * Resolves true on a 200, false on anything else. Never throws, never logs the token.
  */
-function postMessagingCredentials(terminalName, sessionId, creds, timeoutMs = 3000) {
+function postMessagingCredentials(terminalName, sessionId, creds, owner, timeoutMs = 3000) {
   return new Promise((resolve) => {
     let settled = false;
     const done = (value) => { if (!settled) { settled = true; resolve(value); } };
     try {
       if (!terminalName || !creds) { done(false); return; }
       const http = require('http');
-      const postData = JSON.stringify({
-        name: terminalName,
-        sessionId: sessionId || '',
-        socket: creds.socket,
-        token: creds.token,
-      });
+      const postData = JSON.stringify(credentialsBody(terminalName, sessionId, creds, owner));
       const req = http.request({
         hostname: 'localhost',
         port: 5050,
@@ -1050,8 +1081,19 @@ async function main() {
   dtrace(`INPUT: ${input.substring(0, 500)}`);
   dtrace('---');
 
-  // Skip when running inside the Clarion IDE addin (skill/task tools not available)
-  if (process.env.CLARION_ASSISTANT_EMBEDDED) return;
+  // ClarionAssistant tab (ticket 9a731cda, item 7): do NOTHING — no stdout, no credential post, no
+  // profile/session writes, and no SessionEnd disconnect. This is correct, not a gap, because MT's MCP
+  // server already does this hook's messaging job for a CA tab, and doing it here would be harmful.
+  // Measured by a live spike, 2026-09-29:
+  //   - /clear does not rotate the messaging socket or token, so there is nothing to re-post after
+  //     /clear; the MCP server posts CA's credentials once, at its own startup.
+  //   - an args-form hook's parent (process.ppid) is claude.exe, and CA closes a tab by killing
+  //     claude, so MT's ownerPid reaper releases the row. A SessionEnd release from here is not needed.
+  //   - it would also be wrong: the disconnect is keyed by NAME, and another IDE instance can host a
+  //     tab with the same CA-<slug> name, so a name-keyed disconnect could tear down that live tab.
+  // Pinned by dispatch-test/unit-session-status-embedded.js, which runs this hook as a child process
+  // with every network call trapped and asserts empty stdout and zero connection attempts.
+  if (isClarionEmbedded(process.env)) return;
 
   if (!input.trim()) {
     console.error('No input received');
@@ -1408,4 +1450,4 @@ if (require.main === module) {
   });
 }
 
-module.exports = { resolveHookProjectId, projectManagerRoleLines, messagingCredentials, buildStartupPrefetchBlock, PREFETCH_MAX_BYTES, isSharedPlaceholderName, releaseOnSessionEnd, postSessionStartCredentials };
+module.exports = { resolveHookProjectId, projectManagerRoleLines, messagingCredentials, buildStartupPrefetchBlock, PREFETCH_MAX_BYTES, isSharedPlaceholderName, releaseOnSessionEnd, postSessionStartCredentials, credentialOwner, credentialsBody, postMessagingCredentials };

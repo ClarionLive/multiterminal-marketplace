@@ -141,8 +141,9 @@ function recorder(result) {
     }
     {
       const post = recorder(true);
-      check(await postSessionStartCredentials('Alice', 'sid', GOOD_ENV, { postCredentials: post }), 'posted', 'SessionStart "Alice" -> posted');
-      check(post.calls, [['Alice', 'sid', { socket: GOOD_SOCKET, token: SENTINEL }]], 'SessionStart "Alice" -> one POST, under Alice, with the env credentials');
+      check(await postSessionStartCredentials('Alice', 'sid', GOOD_ENV, { postCredentials: post, ownerPid: 4242 }), 'posted', 'SessionStart "Alice" -> posted');
+      // 4th argument added by ticket 9a731cda (owner: nonce/ownerPid); GOOD_ENV has no launch nonce.
+      check(post.calls, [['Alice', 'sid', { socket: GOOD_SOCKET, token: SENTINEL }, { ownerPid: 4242 }]], 'SessionStart "Alice" -> one POST, under Alice, with the env credentials');
     }
     {
       const post = recorder(false);

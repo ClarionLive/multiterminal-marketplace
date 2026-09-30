@@ -66,6 +66,17 @@ The resolution order (first hit wins) is: `MT_BETTER_SQLITE3` → bare `better-s
 - **Hooks** — session lifecycle, activity tracking, kanban pipeline triggers, safety guards.
 - **Skills** — `session-start`, `kanban-task`, `project-management`, `program-management`, review/audit/diagnose pipelines, and more.
 - **Agents** — verifier, code-reviewer, security-auditor, debugger, devil's-advocate, and supporting roles.
+
+## ClarionAssistant-embedded sessions
+
+When a session runs with `CLARION_ASSISTANT_EMBEDDED` set (a ClarionAssistant tab in the Clarion
+IDE), the plugin runs **messaging only**: `dispatch-hook.js` keeps just `inbox-check-hook` (an
+allowlist, `CA_ALLOWED_LEAVES`, so a hook added later is off there by default), and the standalone
+SessionStart hooks print nothing. Registration and native-delivery credentials for such a tab come
+from MultiTerminal's MCP server, not from these hooks, and the tab is released by MultiTerminal's
+liveness reaper rather than by SessionEnd. The full contract lives in the MultiTerminal repo at
+`.claude/rules/ca-embedded-sessions.md` (ticket 9a731cda).
+
 ## License / ownership
 
 Maintained by **ClarionLive**.
