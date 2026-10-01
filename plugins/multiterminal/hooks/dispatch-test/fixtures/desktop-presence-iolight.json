@@ -1,5 +1,6 @@
 [
   { "name": "native-injected-json", "stdin": { "prompt": "[MultiTerminal message from Alice]\n\nstatus?" } },
   { "name": "native-injected-json-behind-harness-framing", "stdin": { "prompt": "Another Claude session sent a message:\n[MultiTerminal message from MultiRemote]\n\nphone message" } },
-  { "name": "native-injected-raw", "stdin": "[MultiTerminal message from MultiRemote]\n\nphone message" }
+  { "name": "native-injected-raw", "stdin": "[MultiTerminal message from MultiRemote]\n\nphone message" },
+  { "name": "native-injected-json-with-recipient", "stdin": { "prompt": "[MultiTerminal message from Alice to CA-Terminal-1-CC-2]\n\nstatus?" } }
 ]

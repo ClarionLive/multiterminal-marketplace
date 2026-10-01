@@ -62,6 +62,8 @@ SendMessage({to: "Alice", notify_when_idle: true})   # one-shot "tell me when yo
 
 **Replying to ClaudeRemote (MultiRemote) uses `send_message`.** It POSTs to `/api/messaging/send` and also delivers a copy to ClaudeRemote so it appears in the phone's Messages tab.
 
+**You can omit `fromTerminalId`** on `send_message` and `broadcast_message`: MultiTerminal fills in your own name. If you pass a different name and MultiTerminal can tell who you are, it sends as you and says so in the result. A message MultiTerminal delivers to you starts `[MultiTerminal message from <sender> to <you>]`, so the second name is your own. If a messaging tool says this session is **not registered** or the name is **held by another terminal**, stop and tell the Owner: do not retry under another name.
+
 **Rule of thumb:** working chatter between agents → `SendMessage`. Anything the Owner may want to read later, or on the phone → `send_message`. In doubt, choose the board: a message the Owner cannot find is worse than one they can ignore.
 
 ---
@@ -104,10 +106,10 @@ Same rules in both cases: dirty-tree guard, `[no-cd]` sentinel, no-op when alrea
 
 ### Mid-session: the task-switch event
 
-When a kanban task is set active for your terminal, the MultiTerminal broker pushes a system event into your session. It arrives natively (ticket 0ff1b520) as a user turn that begins with a `[MultiTerminal message from MultiTerminal]` line:
+When a kanban task is set active for your terminal, the MultiTerminal broker pushes a system event into your session. It arrives natively (ticket 0ff1b520) as a user turn that begins with a `[MultiTerminal message from MultiTerminal to <you>]` line (MT builds before ticket eb585e6e omit ` to <you>`):
 
 ```
-[MultiTerminal message from MultiTerminal]
+[MultiTerminal message from MultiTerminal to YourName]
 
 {"type":"task_active_changed","agentName":"YourName","oldTaskId":"...","oldWorktree":"...","newTaskId":"...","newWorktree":"H:\\...\\.claude\\worktrees\\<id>\\"}
 ```
@@ -155,10 +157,10 @@ Task switches happen often during multi-task days. The broker materializes a per
 
 When a task is marked done with worktree mode on, the MultiTerminal broker calls `git worktree remove` to tear down the task's worktree. On Windows, if any process has its cwd inside that worktree the OS holds an open handle on the directory — `git worktree remove` wipes the contents and unregisters the worktree but cannot rmdir the empty shell. Result: an orphan empty directory that future terminals can accidentally land in (with the Git tab reporting "No git repository").
 
-To avoid that, the broker fires a pre-prune broadcast. Like the task-switch event, it arrives natively, as a user turn beginning `[MultiTerminal message from MultiTerminal]`:
+To avoid that, the broker fires a pre-prune broadcast. Like the task-switch event, it arrives natively, as a user turn beginning `[MultiTerminal message from MultiTerminal to <you>]`:
 
 ```
-[MultiTerminal message from MultiTerminal]
+[MultiTerminal message from MultiTerminal to YourName]
 
 {"type":"worktree_pruning","taskId":"...","worktreePath":"H:\\...\\.claude\\worktrees\\<id>","repoRoot":"H:\\...\\<project>","agentName":"<assignee>"}
 ```
@@ -354,11 +356,11 @@ list_terminals()
 # Register your terminal
 register_terminal(name="YourName", docId="unique-id")
 
-# Send a message
-send_message(fromTerminalId="your-id", to="RecipientName", message="Hello!")
+# Send a message (the sender defaults to your own name)
+send_message(to="RecipientName", message="Hello!")
 
 # Broadcast to all
-broadcast_message(fromTerminalId="your-id", message="Hello everyone!")
+broadcast_message(message="Hello everyone!")
 
 # Get your messages
 get_messages(terminalId="your-id")
