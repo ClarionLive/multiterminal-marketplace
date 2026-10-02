@@ -50,6 +50,13 @@ async function main() {
     { postRemoteModeOff: postSpy });
   assert.strictEqual(posted, 3, 'native-injected behind harness framing → NO post');
 
+  // MT ticket eb585e6e: the header now names the recipient too ("from X to Y"),
+  // so a session learns its own name from what it receives. The marker matches
+  // the unchanged prefix only; this pins that the new shape is still recognised.
+  await run({ prompt: 'Another Claude session sent a message:\n[MultiTerminal message from Alice to CA-Terminal-1-CC-2]\n\nHi' },
+    { postRemoteModeOff: postSpy });
+  assert.strictEqual(posted, 3, 'native-injected with a recipient in the header → NO post');
+
   // Guards the other direction: the fix must not make the hook inert. A marker
   // broad enough to swallow ordinary typing would leave every assertion above
   // green while remote mode simply never switched off again.
@@ -57,7 +64,7 @@ async function main() {
     { postRemoteModeOff: postSpy });
   assert.strictEqual(posted, 4, 'prose merely MENTIONING the wrapper is still desktop typing');
 
-  console.log('desktop-presence run() unit: PASS (6 assertions)');
+  console.log('desktop-presence run() unit: PASS (7 assertions)');
 }
 
 main().catch((e) => { console.error(e); process.exit(1); });
