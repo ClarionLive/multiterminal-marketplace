@@ -14,6 +14,7 @@ const DB_PATH = path.join(process.env.APPDATA || '', 'multiterminal', 'multiterm
 
 // better-sqlite3 resolution is centralized in _sqlite.js (issue #7) — no hardcoded paths.
 const { requireBetterSqlite3, sqliteUnavailableMessage } = require('./_sqlite');
+const { multiterminalMcpWarning } = require('./mcp-availability.js');
 
 function updateProfileStatus(terminalName, isOnline) {
   try {
@@ -1128,6 +1129,10 @@ async function main() {
     case 'SessionStart': {
       dtrace(`STEP 1: Entered SessionStart branch for ${terminalName}`);
 
+      // Ticket a796e5f9 (GitHub #25): started now, in parallel with the credentials post below, so a
+      // hung MT costs one probe deadline (1.5s), not two in a row. Printed before any banner.
+      const mcpWarningPending = multiterminalMcpWarning(process.env);
+
       // Mark profile online. Not for the shared placeholder: the broker deliberately never creates
       // an "Unassigned" profile, and since SessionEnd no longer releases that name, nothing would
       // ever mark it offline again (pipeline run 1, debugger).
@@ -1146,6 +1151,8 @@ async function main() {
       // Failure is non-fatal by design: a terminal whose credentials never arrive simply keeps
       // the existing paths.
       await postSessionStartCredentials(terminalName, sessionId, process.env);
+      const mcpWarning = await mcpWarningPending; // '' when all is well; never rejects
+      if (mcpWarning) console.log(`${mcpWarning}\n`);
 
       // Skip kanban/plan context for spawned agents (they have specific tasks from spawner)
       // But NOT on /clear — user explicitly wants a fresh start with session-start menu
