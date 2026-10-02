@@ -14,6 +14,7 @@ const DB_PATH = path.join(process.env.APPDATA || '', 'multiterminal', 'multiterm
 
 // better-sqlite3 resolution is centralized in _sqlite.js (issue #7) — no hardcoded paths.
 const { requireBetterSqlite3, sqliteUnavailableMessage } = require('./_sqlite');
+const { multiterminalMcpWarning } = require('./mcp-availability.js');
 
 function updateProfileStatus(terminalName, isOnline) {
   try {
@@ -1127,6 +1128,11 @@ async function main() {
   switch (hookType) {
     case 'SessionStart': {
       dtrace(`STEP 1: Entered SessionStart branch for ${terminalName}`);
+
+      // Ticket a796e5f9 (GitHub #25): first, so it survives the 2KB preview and no banner below
+      // can make a session without MultiTerminal's tools look healthy. '' when all is well.
+      const mcpWarning = await multiterminalMcpWarning(process.env);
+      if (mcpWarning) console.log(`${mcpWarning}\n`);
 
       // Mark profile online. Not for the shared placeholder: the broker deliberately never creates
       // an "Unassigned" profile, and since SessionEnd no longer releases that name, nothing would
