@@ -3,8 +3,11 @@
  * Unit test: a quiet-start terminal's SessionStart (GitHub #34, task e0fa9d90).
  *
  * MultiTerminal sets MULTITERMINAL_QUIET_START='true' when the project has Quiet start on and the
- * terminal is not a spawned helper. The hook must then print identity only: no AUTO-RUN of
- * /multiterminal:session-start, no prefetch, no /clear inject request. It still registers the session.
+ * terminal is not a spawned helper. The hook must then print identity and the static behavioral rules
+ * (multiterminal-rules.md, kept by PM decision: no tool call, nothing typed) and nothing that churns:
+ * no AUTO-RUN of /multiterminal:session-start, no prefetch, no /clear inject request. It still
+ * registers the session. Knowledge and kanban injection are skipped too, but this test cannot see
+ * that: with no database (empty APPDATA) neither prints in the control run either.
  *
  * Two layers:
  *   - the pure helpers (isQuietStart, quietStartLines, registerQuietSession with a stub request);
@@ -21,6 +24,8 @@
  * (anchor counted: 1 before, 0 after) -> red at 'quiet: no AUTO-RUN', the first child-process
  * assertion, as predicted; restored -> green. The run stops at the first failure, so the later
  * quiet and quiet-/clear assertions were not individually seen red. Their controls do trip.
+ * Second run, same day: the quiet block's printMultiTerminalRules() call removed (calls counted:
+ * 2 before, 1 after) -> red at 'quiet: behavioral rules still printed', as predicted; restored -> green.
  */
 const assert = require('assert');
 const fs = require('fs');
@@ -73,6 +78,11 @@ const GUID = '5d7853b8-c695-4684-8f32-dfad644b0669';
   const work = fs.mkdtempSync(path.join(os.tmpdir(), 'mt-e0fa9d90-'));
   const appdata = path.join(work, 'appdata');
   fs.mkdirSync(appdata);
+  // The hook reads multiterminal-rules.md from its cwd; each child runs in `work`.
+  const RULES_SENTINEL = 'RULES-SENTINEL-e0fa9d90: claim before coding.';
+  fs.writeFileSync(path.join(work, 'multiterminal-rules.md'), `# MultiTerminal Rules
+${RULES_SENTINEL}
+`);
   let n = 0;
   const runHook = (hookData, vars) => {
     const logFile = path.join(work, `tripwire-${++n}.log`);
@@ -91,7 +101,7 @@ const GUID = '5d7853b8-c695-4684-8f32-dfad644b0669';
       MULTITERMINAL_PROJECT_ID: GUID,
       MULTITERMINAL_PROJECT_PM: 'true',
     }, vars);
-    const r = spawnSync(process.execPath, [HOOK], { input: JSON.stringify(hookData), env, encoding: 'utf8', timeout: 30000 });
+    const r = spawnSync(process.execPath, [HOOK], { input: JSON.stringify(hookData), env, cwd: work, encoding: 'utf8', timeout: 30000 });
     assert.ok(!r.error, `spawn failed: ${r.error}`);
     const trips = fs.existsSync(logFile) ? fs.readFileSync(logFile, 'utf8') : '';
     return { out: r.stdout || '', trips };
@@ -105,6 +115,7 @@ const GUID = '5d7853b8-c695-4684-8f32-dfad644b0669';
     const control = runHook(start, {});
     ok(control.out.includes('AUTO-RUN SKILL'), 'control: AUTO-RUN printed (the instrument can see it)');
     ok(control.trips.includes('/api/remote-mode'), 'control: prefetch attempted (the tripwire can see it)');
+    ok(control.out.includes(RULES_SENTINEL), 'control: rules printed (the rules file is where the hook looks)');
     const controlClear = runHook(clear, {});
     ok(controlClear.trips.includes('/api/terminals/inject'), 'control /clear: inject attempted');
 
@@ -112,12 +123,14 @@ const GUID = '5d7853b8-c695-4684-8f32-dfad644b0669';
     ok(!quiet.out.includes('AUTO-RUN'), 'quiet: no AUTO-RUN');
     ok(quiet.out.includes('MULTITERMINAL_NAME=QuietTest'), 'quiet: identity printed');
     ok(quiet.out.includes('## Quiet start'), 'quiet: note printed');
+    ok(quiet.out.includes(RULES_SENTINEL), 'quiet: behavioral rules still printed');
     ok(!quiet.out.includes('## MultiTerminal Startup Prefetch'), 'quiet: no prefetch block');
     ok(!quiet.trips.includes('/api/remote-mode') && !quiet.trips.includes('/api/tasks/active/'), 'quiet: no prefetch calls');
     ok(quiet.trips.includes('/api/session-lineage/register'), 'quiet: session registration still attempted');
 
     const quietClear = runHook(clear, { MULTITERMINAL_QUIET_START: 'true' });
     ok(!quietClear.out.includes('AUTO-RUN'), 'quiet /clear: no AUTO-RUN');
+    ok(quietClear.out.includes(RULES_SENTINEL), 'quiet /clear: behavioral rules still printed');
     ok(!quietClear.trips.includes('/api/terminals/inject'), 'quiet /clear: no inject request');
   } finally {
     fs.rmSync(work, { recursive: true, force: true });

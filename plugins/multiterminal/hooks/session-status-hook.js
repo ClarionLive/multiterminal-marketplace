@@ -1042,10 +1042,28 @@ async function buildStartupPrefetchBlock(ctx, deps = {}) {
   return block;
 }
 
+// The host-controlled behavioral rules (multiterminal-rules.md in the launch folder), printed by both
+// the normal and the quiet SessionStart path. Non-critical: a missing or unreadable file prints nothing.
+function printMultiTerminalRules() {
+  try {
+    const rulesPath = path.join(process.cwd(), 'multiterminal-rules.md');
+    if (fs.existsSync(rulesPath)) {
+      const rulesContent = fs.readFileSync(rulesPath, 'utf-8').trim();
+      if (rulesContent) {
+        console.log(rulesContent);
+        console.log('');
+      }
+    }
+  } catch (_rulesErr) {
+    // Non-critical — never block startup
+  }
+}
+
 // ─── Quiet start (GitHub #34, task e0fa9d90) ───────────────────────────────────────────────────────
 // A project can be set to "Quiet start" in MultiTerminal. Its terminals then only get into their
-// folder and register their identity: no AUTO-RUN of /multiterminal:session-start, no prefetch, no
-// menu, and MT types nothing into the prompt (MT skips its own "initializing..." kick for the same
+// folder, register their identity and receive the static behavioral rules: no AUTO-RUN of
+// /multiterminal:session-start, no prefetch, no knowledge or kanban injection, no menu, and MT types
+// nothing into the prompt (MT skips its own "initializing..." kick for the same
 // launch). MT signals it with MULTITERMINAL_QUIET_START='true', set or explicitly cleared at every
 // launch (ConPtyTerminal.BuildQuietStartEnvAssignment). Only that exact value counts, as with
 // MULTITERMINAL_PROJECT_PM, and a spawned helper is never quiet: it must take its first turn to
@@ -1220,11 +1238,15 @@ async function main() {
         break;
       }
 
-      // Quiet start (GitHub #34): identity and session registration only, then stop. This also covers
-      // /clear in a quiet terminal: no AUTO-RUN and no "initializing..." inject request.
+      // Quiet start (GitHub #34): identity, the behavioral rules and session registration, then stop.
+      // This also covers /clear in a quiet terminal: no AUTO-RUN and no "initializing..." inject request.
+      // The rules stay (PM decision): static text, no tool call, nothing typed, and without them a quiet
+      // terminal does not know the kanban or messaging rules once the user gives it real work.
       if (isQuietStart(process.env)) {
-        dtrace('STEP 4q: quiet start, skipping AUTO-RUN, prefetch and context injection');
+        dtrace('STEP 4q: quiet start, skipping AUTO-RUN, prefetch, knowledge and kanban injection');
         for (const line of quietStartLines(terminalName, process.env, sessionId)) console.log(line);
+        console.log('');
+        printMultiTerminalRules();
         const registered = await registerQuietSession({ terminalName, sessionId, projectPath: hookData.cwd || process.cwd() });
         dtrace(`STEP 5q: quiet session register ${registered ? 'ok' : 'failed'}`);
         break;
@@ -1318,18 +1340,7 @@ async function main() {
       console.log('');
 
       // Inject MultiTerminal behavioral rules (host-controlled, replaces MEMORY.md)
-      try {
-        const rulesPath = path.join(process.cwd(), 'multiterminal-rules.md');
-        if (fs.existsSync(rulesPath)) {
-          const rulesContent = fs.readFileSync(rulesPath, 'utf-8').trim();
-          if (rulesContent) {
-            console.log(rulesContent);
-            console.log('');
-          }
-        }
-      } catch (rulesErr) {
-        // Non-critical — never block startup
-      }
+      printMultiTerminalRules();
 
       // ACTIVE-CONTEXT.md injection removed (task 78bcf274, Eval P4).
       // The session-start skill is the single owner of session continuity via
