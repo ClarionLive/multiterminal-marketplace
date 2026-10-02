@@ -1042,6 +1042,53 @@ async function buildStartupPrefetchBlock(ctx, deps = {}) {
   return block;
 }
 
+// ─── Quiet start (GitHub #34, task e0fa9d90) ───────────────────────────────────────────────────────
+// A project can be set to "Quiet start" in MultiTerminal. Its terminals then only get into their
+// folder and register their identity: no AUTO-RUN of /multiterminal:session-start, no prefetch, no
+// menu, and MT types nothing into the prompt (MT skips its own "initializing..." kick for the same
+// launch). MT signals it with MULTITERMINAL_QUIET_START='true', set or explicitly cleared at every
+// launch (ConPtyTerminal.BuildQuietStartEnvAssignment). Only that exact value counts, as with
+// MULTITERMINAL_PROJECT_PM, and a spawned helper is never quiet: it must take its first turn to
+// collect its job. MT never sets the flag for a helper; the check here covers an inherited environment.
+function isQuietStart(env) {
+  return env.MULTITERMINAL_QUIET_START === 'true' && !env.MULTITERMINAL_SPAWNER;
+}
+
+// Everything a quiet SessionStart prints: the same identity lines as the normal path (so a later
+// /multiterminal:session-start, or any skill, still finds them), then one note so the model waits
+// instead of improvising a greeting. Pure, so the unit test can pin it.
+function quietStartLines(terminalName, env, sessionId) {
+  return [
+    '## MultiTerminal Identity (authoritative — from SessionStart hook)',
+    `MULTITERMINAL_NAME=${terminalName}`,
+    `MULTITERMINAL_DOC_ID=${env.MULTITERMINAL_DOC_ID || ''}`,
+    `CLAUDE_SESSION_ID=${sessionId || ''}`,
+    ...projectManagerRoleLines(env),
+    '',
+    `## Terminal Identity: ${terminalName}`,
+    `You are ${terminalName}. Always use "${terminalName}" as your name when registering, claiming tasks, or sending messages.`,
+    '',
+    '## Quiet start',
+    "Quiet start is on for this project, so /multiterminal:session-start was deliberately not run. Do not run it, load context or greet on your own: wait for the user's first message and act on that. Run /multiterminal:session-start only if the user asks for the startup menu or a recap.",
+  ];
+}
+
+// The one MT call a quiet start still makes: registering this session in the lifecycle pipeline, which
+// session-start would otherwise do (directly, or through the prefetch). Same body and janitor skip as
+// the prefetch's register call. Never throws; bounded by PREFETCH_DEADLINE_MS. Returns true on a 2xx.
+async function registerQuietSession(ctx, deps = {}) {
+  if (!ctx.sessionId) return false;
+  const request = deps.request || prefetchRequest;
+  try {
+    const res = await request('POST', '/api/session-lineage/register', {
+      sessionId: ctx.sessionId, agentName: ctx.terminalName, projectPath: ctx.projectPath, skipJanitor: true,
+    }, deps.timeoutMs ?? PREFETCH_DEADLINE_MS);
+    return !!res && res.status >= 200 && res.status < 300;
+  } catch (_e) {
+    return false;
+  }
+}
+
 /**
  * The inputs buildStartupPrefetchBlock needs from SQLite, on one short-lived read-only handle: the
  * project scope (same resolution as the board below) and, for a PM only, the project's name.
@@ -1170,6 +1217,16 @@ async function main() {
         } else {
           console.log('Waiting for task assignment from spawner...');
         }
+        break;
+      }
+
+      // Quiet start (GitHub #34): identity and session registration only, then stop. This also covers
+      // /clear in a quiet terminal: no AUTO-RUN and no "initializing..." inject request.
+      if (isQuietStart(process.env)) {
+        dtrace('STEP 4q: quiet start, skipping AUTO-RUN, prefetch and context injection');
+        for (const line of quietStartLines(terminalName, process.env, sessionId)) console.log(line);
+        const registered = await registerQuietSession({ terminalName, sessionId, projectPath: hookData.cwd || process.cwd() });
+        dtrace(`STEP 5q: quiet session register ${registered ? 'ok' : 'failed'}`);
         break;
       }
 
@@ -1450,4 +1507,4 @@ if (require.main === module) {
   });
 }
 
-module.exports = { resolveHookProjectId, projectManagerRoleLines, messagingCredentials, buildStartupPrefetchBlock, PREFETCH_MAX_BYTES, isSharedPlaceholderName, releaseOnSessionEnd, postSessionStartCredentials, credentialOwner, credentialsBody, postMessagingCredentials };
+module.exports = { resolveHookProjectId, projectManagerRoleLines, messagingCredentials, buildStartupPrefetchBlock, PREFETCH_MAX_BYTES, isSharedPlaceholderName, releaseOnSessionEnd, postSessionStartCredentials, credentialOwner, credentialsBody, postMessagingCredentials, isQuietStart, quietStartLines, registerQuietSession };
