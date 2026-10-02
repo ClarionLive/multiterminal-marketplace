@@ -232,6 +232,34 @@ function isProcessKill(command) {
 
 // ── Rule Definitions ────────────────────────────────────────────────
 
+// ── Force-push detection (GitHub #28; hardened after task e0fa9d90 pipeline run 1) ──────────────────
+// The scan for -f / --force must stay inside the `git push` command it belongs to. A plain regex
+// over the raw text gets that wrong in both directions, so the command is normalized first:
+//   - line continuations (bash backslash-newline, PowerShell backtick-newline) become spaces, so a
+//     push continued onto the next line is still one command;
+//   - a quoted string loses its quotes, and inside it & ; | and newline become spaces; the rest of
+//     the content is KEPT. So a separator in an argument (git push -o "a;b" --force) does not end
+//     the scan, while a quoted flag (git push "--force", which git receives as --force) is still
+//     seen. Blanking quoted strings outright would hide that flag;
+//   - redirections containing & (2>&1, >&2, 2>&-, &>, &>>) become spaces, so their & is not read
+//     as a separator (git push origin main 2>&1 --force).
+// Then [^&;|\r\n]* stops at the next real separator, a line break included (git push<newline>rm -f x),
+// and the flag must follow a space or tab, so a branch named hotfix-f is not a force flag.
+// --force still matches --force-with-lease, which also rewrites remote history.
+// dispatch-test/unit-safety-force-push.js pins every case, including against clarion-assistant's copy.
+const FORCE_PUSH = /\bgit[ \t]+push\b[^&;|\r\n]*[ \t](-f|--force)\b/;
+
+function forcePushView(command) {
+  return command
+    .replace(/\\\r?\n|`\r?\n/g, ' ')
+    .replace(/'[^']*'|"(?:[^"\\]|\\.)*"/g, (q) => q.slice(1, -1).replace(/[&;|\r\n]/g, ' '))
+    .replace(/\d*>&(?:\d+|-)|&>>?/g, ' ');
+}
+
+function isForcePush(command) {
+  return FORCE_PUSH.test(forcePushView(command));
+}
+
 /**
  * Bash command rules. Checked in order; first match wins.
  * pattern: regex tested against the full command string, OR
@@ -332,7 +360,9 @@ const BASH_RULES = [
   },
   // Gate destructive git operations — user can approve
   {
-    pattern: /\bgit\s+push\s+.*(-f|--force)\b/,
+    // Was /\bgit\s+push\s+.*(-f|--force)\b/, whose .* ran through && ; | (GitHub #28). See
+    // isForcePush for what the scan now stops at and why the command is normalized first.
+    test: isForcePush,
     action: 'ask',
     reason: 'Force-push detected. This rewrites remote history and can destroy others\' work.'
   },

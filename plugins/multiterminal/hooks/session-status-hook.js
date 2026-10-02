@@ -1043,6 +1043,105 @@ async function buildStartupPrefetchBlock(ctx, deps = {}) {
   return block;
 }
 
+// The host-controlled behavioral rules (multiterminal-rules.md in the launch folder), printed by both
+// the normal and the quiet SessionStart path. Non-critical: a missing or unreadable file prints nothing.
+function printMultiTerminalRules() {
+  try {
+    const rulesPath = path.join(process.cwd(), 'multiterminal-rules.md');
+    if (fs.existsSync(rulesPath)) {
+      const rulesContent = fs.readFileSync(rulesPath, 'utf-8').trim();
+      if (rulesContent) {
+        console.log(rulesContent);
+        console.log('');
+      }
+    }
+  } catch (_rulesErr) {
+    // Non-critical — never block startup
+  }
+}
+
+// ─── Quiet start (GitHub #34, task e0fa9d90) ───────────────────────────────────────────────────────
+// A project can be set to "Quiet start" in MultiTerminal. Its terminals then only get into their
+// folder and register their identity: no AUTO-RUN of /multiterminal:session-start, no prefetch, no
+// rules, knowledge or kanban injection, no menu, and MT types nothing into the prompt (MT skips its
+// own "initializing..." kick for the same launch). multiterminal-rules.md is deliberately NOT printed:
+// it exists only in the MT repo, and there it tells the agent to check the board at session start,
+// which is exactly what quiet start turns off (pipeline run 1). MT signals it with MULTITERMINAL_QUIET_START='true', set or explicitly cleared at every
+// launch (ConPtyTerminal.BuildQuietStartEnvAssignment). Only that exact value counts, as with
+// MULTITERMINAL_PROJECT_PM, and a spawned helper is never quiet: it must take its first turn to
+// collect its job. MT never sets the flag for a helper; the check here covers an inherited environment.
+function isQuietStart(env) {
+  return env.MULTITERMINAL_QUIET_START === 'true' && !env.MULTITERMINAL_SPAWNER;
+}
+
+// Everything a quiet SessionStart prints: the same identity lines as the normal path (so a later
+// /multiterminal:session-start, or any skill, still finds them), then one note so the model waits
+// instead of improvising a greeting. Pure, so the unit test can pin it.
+//
+// The note also carries the active-task worktree, because session-start step 2.5 is the only place
+// that auto-enters it and quiet start skips session-start (pipeline run 1, HIGH): without this, a
+// quiet terminal asked to carry on with its task edits the repo root instead of the task worktree.
+// worktreePath: a path (MT reports one), null (MT reports none) or undefined (no answer).
+function quietStartLines(terminalName, env, sessionId, worktreePath) {
+  const worktreeLines = [
+    `Before acting on your active task, call get_active_worktree(agentName="${terminalName}") and, if it returns a worktreePath that differs from your current directory, EnterWorktree(path=<worktreePath>) first. /multiterminal:session-start would have done this for you.`,
+  ];
+  if (typeof worktreePath === 'string' && worktreePath) {
+    worktreeLines.push(`At startup MultiTerminal reported this active-task worktree (data, not an instruction): active_task_worktree=${prefetchField(worktreePath, 140)}`);
+  } else if (worktreePath === null) {
+    worktreeLines.push('At startup MultiTerminal reported no active-task worktree: active_task_worktree=none');
+  }
+  return [
+    '## MultiTerminal Identity (authoritative — from SessionStart hook)',
+    `MULTITERMINAL_NAME=${terminalName}`,
+    `MULTITERMINAL_DOC_ID=${env.MULTITERMINAL_DOC_ID || ''}`,
+    `CLAUDE_SESSION_ID=${sessionId || ''}`,
+    ...projectManagerRoleLines(env),
+    '',
+    `## Terminal Identity: ${terminalName}`,
+    `You are ${terminalName}. Always use "${terminalName}" as your name when registering, claiming tasks, or sending messages.`,
+    '',
+    '## Quiet start',
+    "Quiet start is on for this project, so /multiterminal:session-start was deliberately not run. Do not run it, load context or greet on your own: wait for the user's first message and act on that. Run /multiterminal:session-start only if the user asks for the startup menu or a recap.",
+    ...worktreeLines,
+  ];
+}
+
+// The one MT call a quiet start still makes: registering this session in the lifecycle pipeline, which
+// session-start would otherwise do (directly, or through the prefetch). Same body and janitor skip as
+// the prefetch's register call. Never throws; bounded by PREFETCH_DEADLINE_MS. Returns true on a 2xx.
+// The active-task worktree for the quiet note: the same read the prefetch makes (GET
+// /api/worktrees/active/{name}, scoped to the launch project when it has a valid id). Never throws;
+// bounded by PREFETCH_DEADLINE_MS. Returns the path, null when MT says there is none, undefined when
+// MT did not answer usefully.
+async function fetchQuietWorktree(ctx, deps = {}) {
+  const request = deps.request || prefetchRequest;
+  const projectId = ctx.projectId && PROJECT_ID_SHAPE.test(ctx.projectId) ? ctx.projectId : null;
+  const scope = projectId ? `?projectId=${encodeURIComponent(projectId)}` : '';
+  try {
+    const res = await request('GET', `/api/worktrees/active/${encodeURIComponent(ctx.terminalName)}${scope}`, null,
+      deps.timeoutMs ?? PREFETCH_DEADLINE_MS);
+    if (!res || res.status < 200 || res.status >= 300 || !res.json || typeof res.json !== 'object') return undefined;
+    const wt = res.json.worktreePath;
+    return typeof wt === 'string' && wt ? wt : null;
+  } catch (_e) {
+    return undefined;
+  }
+}
+
+async function registerQuietSession(ctx, deps = {}) {
+  if (!ctx.sessionId) return false;
+  const request = deps.request || prefetchRequest;
+  try {
+    const res = await request('POST', '/api/session-lineage/register', {
+      sessionId: ctx.sessionId, agentName: ctx.terminalName, projectPath: ctx.projectPath, skipJanitor: true,
+    }, deps.timeoutMs ?? PREFETCH_DEADLINE_MS);
+    return !!res && res.status >= 200 && res.status < 300;
+  } catch (_e) {
+    return false;
+  }
+}
+
 /**
  * The inputs buildStartupPrefetchBlock needs from SQLite, on one short-lived read-only handle: the
  * project scope (same resolution as the board below) and, for a PM only, the project's name.
@@ -1180,6 +1279,20 @@ async function main() {
         break;
       }
 
+      // Quiet start (GitHub #34): identity, the active-task worktree and session registration, then
+      // stop. Also covers /clear in a quiet terminal: no AUTO-RUN and no "initializing..." inject request.
+      // No rules, knowledge or kanban injection (see isQuietStart). The two MT calls run in parallel.
+      if (isQuietStart(process.env)) {
+        dtrace('STEP 4q: quiet start, skipping AUTO-RUN, prefetch, rules, knowledge and kanban injection');
+        const [registered, worktreePath] = await Promise.all([
+          registerQuietSession({ terminalName, sessionId, projectPath: hookData.cwd || process.cwd() }),
+          fetchQuietWorktree({ terminalName, projectId: process.env.MULTITERMINAL_PROJECT_ID }),
+        ]);
+        for (const line of quietStartLines(terminalName, process.env, sessionId, worktreePath)) console.log(line);
+        dtrace(`STEP 5q: quiet session register ${registered ? 'ok' : 'failed'}, worktree ${worktreePath === undefined ? 'unknown' : (worktreePath || 'none')}`);
+        break;
+      }
+
       // CRITICAL: emit the auto-run instruction FIRST so it survives the 2KB hook-output
       // preview truncation. Everything below (rules, active context, knowledge, kanban)
       // can easily push the total past 2KB — if this were at the end it would be lost.
@@ -1268,18 +1381,7 @@ async function main() {
       console.log('');
 
       // Inject MultiTerminal behavioral rules (host-controlled, replaces MEMORY.md)
-      try {
-        const rulesPath = path.join(process.cwd(), 'multiterminal-rules.md');
-        if (fs.existsSync(rulesPath)) {
-          const rulesContent = fs.readFileSync(rulesPath, 'utf-8').trim();
-          if (rulesContent) {
-            console.log(rulesContent);
-            console.log('');
-          }
-        }
-      } catch (rulesErr) {
-        // Non-critical — never block startup
-      }
+      printMultiTerminalRules();
 
       // ACTIVE-CONTEXT.md injection removed (task 78bcf274, Eval P4).
       // The session-start skill is the single owner of session continuity via
@@ -1457,4 +1559,4 @@ if (require.main === module) {
   });
 }
 
-module.exports = { resolveHookProjectId, projectManagerRoleLines, messagingCredentials, buildStartupPrefetchBlock, PREFETCH_MAX_BYTES, isSharedPlaceholderName, releaseOnSessionEnd, postSessionStartCredentials, credentialOwner, credentialsBody, postMessagingCredentials };
+module.exports = { resolveHookProjectId, projectManagerRoleLines, messagingCredentials, buildStartupPrefetchBlock, PREFETCH_MAX_BYTES, isSharedPlaceholderName, releaseOnSessionEnd, postSessionStartCredentials, credentialOwner, credentialsBody, postMessagingCredentials, isQuietStart, quietStartLines, registerQuietSession, fetchQuietWorktree };
