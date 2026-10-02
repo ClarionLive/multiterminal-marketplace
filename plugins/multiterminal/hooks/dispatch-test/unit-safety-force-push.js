@@ -17,8 +17,10 @@
  * %USERPROFILE%\.claude\plugins\marketplaces (or named by SAFETY_HOOK_CA_PATH), because the two plugins
  * ship divergent copies and #28 was a fix made in one and missed in the other. That copy exports
  * nothing, so it is driven as a child process through stdin, as Claude Code runs it. When it is not
- * installed the run says so and checks this plugin only. A divergence fails this test: the point is
- * that a fix in one copy cannot silently miss the other.
+ * installed the run says so and checks this plugin only. This plugin must pass every case. The CA copy
+ * must fail EXACTLY the cases in CA_KNOWN_DIVERGENCES (pinned until ticket 3e05ce26 ports the fix):
+ * failing any other case is red, and a listed case that starts passing is red too, so the list cannot
+ * quietly outlive the gap it describes.
  *
  * Falsified when written (2026-10-02), expectation stated before each run:
  *   - against the original .* pattern, 7 of the first 17 cases went red, exactly the seven chained
@@ -27,6 +29,10 @@
  *     clarion-assistant ships), 6 of 30 went red as predicted: the three line-break NOT_FORCE cases,
  *     hotfix-f, `2>&1 --force` and `-o "a;b" --force`;
  *   - against the original .* pattern on the full 30, 13 went red (observed, not predicted beforehand).
+ * The known-divergence pin, falsified both ways against the installed CA copy, as predicted:
+ *   - 'git push --force' (which CA gets right) added to the list (6 -> 7 entries) -> exactly 1 problem,
+ *     "listed as a known divergence but now PASSES";
+ *   - 'git push origin hotfix-f' (which CA gets wrong) removed (6 -> 5) -> exactly 1 problem, that case.
  */
 const fs = require('fs');
 const os = require('os');
@@ -86,6 +92,19 @@ const FORCE = [
   'git push origin main 2>&1 | tail -3 && git push -f',
 ];
 
+// ── Known gap in clarion-assistant's copy (ticket 3e05ce26) ──
+// CA ships the first-fix pattern /\bgit\s+push\s+[^&;|]*(-f\b|--force\b)/, which gets exactly these
+// cases wrong. Each entry is the case's command text, which is its id in the tables above.
+// 🔴 WHEN THIS GOES RED BECAUSE A LISTED CASE NOW PASSES, DELETE THE ENTRY AND RETURN TO 3e05ce26 — THE GAP HAS BEEN CLOSED, THIS IS NOT A REGRESSION.
+const CA_KNOWN_DIVERGENCES = [
+  'git push\nrm -f x',
+  'git push origin main\nrm -f x',
+  'git push origin main\r\nrm -f x',
+  'git push origin hotfix-f',
+  'git push origin main 2>&1 --force',
+  'git push -o "a;b" --force',
+];
+
 // ── The decision of each copy ──
 function fromStdout(stdout) {
   if (!stdout || !stdout.trim()) return { decision: 'allow', reason: '' };
@@ -123,25 +142,47 @@ function childCopy(hookPath) {
   };
 }
 
-function check(label, decisionFor) {
-  const failures = [];
+// Every case the copy gets wrong, as Map(command -> description).
+function wrongCases(decisionFor) {
+  const wrong = new Map();
   for (const command of NOT_FORCE) {
     if (decisionFor(command).reason.startsWith(FORCE_REASON)) {
-      failures.push(`should NOT ask about a force push, but did: ${JSON.stringify(command)}`);
+      wrong.set(command, `should NOT ask about a force push, but did: ${JSON.stringify(command)}`);
     }
   }
   for (const command of FORCE) {
     const { decision, reason } = decisionFor(command);
     if (decision !== 'ask' || !reason.startsWith(FORCE_REASON)) {
-      failures.push(`should ask about a force push, got ${decision} (${reason || 'no reason'}): ${JSON.stringify(command)}`);
+      wrong.set(command, `should ask about a force push, got ${decision} (${reason || 'no reason'}): ${JSON.stringify(command)}`);
     }
   }
+  return wrong;
+}
+
+// Compares a copy's wrong cases with the ones it is EXPECTED to get wrong; any difference is a failure.
+function check(label, decisionFor, expectedWrong = []) {
   const total = NOT_FORCE.length + FORCE.length;
+  const failures = [];
+  const allCases = new Set([...NOT_FORCE, ...FORCE]);
+  for (const command of expectedWrong) {
+    // A listed id that is not a case would otherwise read as "now passes" forever.
+    if (!allCases.has(command)) failures.push(`known-divergence entry is not a case in the table: ${JSON.stringify(command)}`);
+  }
+  const wrong = wrongCases(decisionFor);
+  for (const [command, description] of wrong) {
+    if (!expectedWrong.includes(command)) failures.push(description);
+  }
+  for (const command of expectedWrong) {
+    if (allCases.has(command) && !wrong.has(command)) {
+      failures.push(`listed as a known divergence but now PASSES: ${JSON.stringify(command)}. Delete the entry and return to 3e05ce26: the gap has been closed, this is not a regression.`);
+    }
+  }
   if (failures.length > 0) {
-    console.error(`FAIL [${label}]: ${failures.length} of ${total} cases`);
+    console.error(`FAIL [${label}]: ${failures.length} problem(s) over ${total} cases`);
     for (const f of failures) console.error(`  - ${f}`);
   } else {
-    console.log(`  ok [${label}]: ${total} cases`);
+    const pinned = expectedWrong.length ? ` (${expectedWrong.length} known divergences, ticket 3e05ce26)` : '';
+    console.log(`  ok [${label}]: ${total} cases${pinned}`);
   }
   return failures.length;
 }
@@ -150,7 +191,7 @@ let failed = check('multiterminal', thisPlugin);
 
 const ca = findClarionAssistantCopy();
 if (ca) {
-  failed += check(`clarion-assistant ${ca}`, childCopy(ca));
+  failed += check(`clarion-assistant ${ca}`, childCopy(ca), CA_KNOWN_DIVERGENCES);
 } else {
   console.log('  note: clarion-assistant safety-hook.js not installed, so only this plugin was checked');
 }
