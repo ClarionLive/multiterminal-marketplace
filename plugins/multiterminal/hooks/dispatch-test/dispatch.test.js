@@ -122,8 +122,9 @@ async function main() {
     //   (event,head) the TABLE routes has a matching dispatch-hook.js entry, and every
     //   dispatch entry is backed by TABLE leaves. Aggregation contract = T1–T5; matcher
     //   GATING = T7; this census reflects dispatch-hook.js routing, not per-hook wiring.
-    ok(total === 23, `T6 hooks.json total leaf census == 23 (got ${total})`);
-    ok(node === 22, `T6 node leaves == 22 (got ${node})`);
+    // (+1 in 9d3404d9: standalone SessionStart agent-rules-hook → 24 total, 23 node.)
+    ok(total === 24, `T6 hooks.json total leaf census == 24 (got ${total})`);
+    ok(node === 23, `T6 node leaves == 23 (got ${node})`);
     ok(nonNode.length === 1 && nonNode[0].command === 'powershell',
       'T6 exactly 1 non-node leaf (SessionStart powershell echo) — inherently standalone, never dispatched');
 
@@ -131,8 +132,8 @@ async function main() {
     const standaloneNames = new Set(Object.keys(STANDALONE));
     const allJsonNames = new Set(Object.values(jsonLeaves).flat().map((j) => j.name));
 
-    // ── (1) STANDALONE allowlist: the SessionStart trio, enumerated + reasoned ──
-    ok(standaloneNames.size === 3, `T6 standalone allowlist has exactly 3 node leaves (got ${standaloneNames.size})`);
+    // ── (1) STANDALONE allowlist: the four SessionStart leaves (agent-rules-hook added in 9d3404d9), enumerated + reasoned ──
+    ok(standaloneNames.size === 4, `T6 standalone allowlist has exactly 4 node leaves (got ${standaloneNames.size})`);
     for (const name of standaloneNames) {
       ok(allJsonNames.has(name), `T6 standalone '${name}' is a real hooks.json node leaf`);
       ok(STANDALONE[name] && STANDALONE[name].length > 0, `T6 standalone '${name}' carries a reason`);

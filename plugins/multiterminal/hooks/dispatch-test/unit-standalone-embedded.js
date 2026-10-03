@@ -6,8 +6,9 @@
  *   - project-context-hook: its first act is `claude plugin install ... --scope project` into the
  *     cwd plus a marker file, then an MT project-context fetch. In CA that would install MT's
  *     plugin into the Clarion project the IDE tab is open on.
- *   - session-compact-hook: after compaction it prints MT rules, an MT kanban task and
+ *   - session-compact-hook: after compaction it prints an MT kanban task and
  *     "You are <name>". A CA tab is not an MT agent.
+ *   - agent-rules-hook (task 9d3404d9) is covered by unit-agent-rules.js, which runs it embedded.
  *
  * Driven through each hook's run() with injected deps (spies for install/fetch, an in-memory fs and
  * a stub DB constructor) — the same run() the CLI shim calls. Each embedded case has a control with
@@ -90,13 +91,14 @@ function csDeps(env, counter) {
     const c = { fs: 0, db: 0 };
     const r = sessionCompact.run({}, csDeps(EMBEDDED, c));
     ok(r && r.exitCode === 0 && !r.stdout, `session-compact embedded: exit 0, empty stdout (got ${JSON.stringify(r && r.stdout)})`);
-    ok(c.fs === 0 && c.db === 0, `session-compact embedded: touches neither the rules file nor the DB (fs=${c.fs}, db=${c.db})`);
+    ok(c.fs === 0 && c.db === 0, `session-compact embedded: touches neither the filesystem nor the DB (fs=${c.fs}, db=${c.db})`);
   }
   {
     const c = { fs: 0, db: 0 };
     const r = sessionCompact.run({}, csDeps({ ...MT_PANE }, c));
-    ok(r.stdout.includes('RULE ONE') && r.stdout.includes('Some MT task') && r.stdout.includes('You are Alice'),
-      'session-compact control (MT pane, same deps): rules + task + identity printed');
+    // The cwd 'RULE ONE' file is no longer printed (task 9d3404d9: rules come from agent-rules-hook).
+    ok(r.stdout.includes('Some MT task') && r.stdout.includes('You are Alice'),
+      'session-compact control (MT pane, same deps): task + identity printed');
     ok(c.db === 1, 'session-compact control: DB consulted');
   }
 

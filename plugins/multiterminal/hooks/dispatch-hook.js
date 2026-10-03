@@ -153,6 +153,8 @@ const STANDALONE = {
     'standalone, never dispatched; left in original CLI/main form by PM ruling (run()+shim is dispatcher-composability plumbing it does not use; highest-blast boot hook + un-equivalence-testable critical path = zero churn for zero functional gain).',
   'session-compact-hook':
     'SessionStart (matcher: compact). Once-per-compaction; does not self-gate on source — kept dispatcher-free (ruling C).',
+  'agent-rules-hook':
+    'SessionStart (matcher: startup|resume|clear|compact). Prints the universal agent rules as its OWN hook command so they get their own 10,000-char output budget (task 9d3404d9); dispatching would merge them into one accumulated stdout and reopen the truncation it exists to avoid.',
 };
 
 // CLARION ASSISTANT ALLOWLIST (ticket 9a731cda). A ClarionAssistant tab is a Claude Code session

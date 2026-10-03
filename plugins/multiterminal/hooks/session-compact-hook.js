@@ -2,11 +2,13 @@
 /**
  * session-compact-hook.js — SessionStart hook with matcher "compact".
  *
- * Fires ONLY after context compaction. Re-injects critical context that
- * would otherwise be lost: MultiTerminal rules + active task state.
+ * Fires ONLY after context compaction. Re-injects the active task state and
+ * identity that would otherwise be lost.
  *
- * This ensures behavioral rules survive compaction without relying on
- * Claude's built-in memory system (which we've disabled).
+ * The agent rules are re-injected after compaction by agent-rules-hook.js
+ * (matcher includes "compact"), read from the plugin, not from the cwd
+ * (task 9d3404d9). This hook used to read multiterminal-rules.md from the
+ * launch folder, which existed only in the MultiTerminal repo.
  */
 const fs = require('fs');
 const path = require('path');
@@ -21,8 +23,8 @@ const DB_PATH = path.join(
 
 // ── Core (dispatcher-callable) ───────────────────────────────────────
 // Ignores hookData (this hook has always drained but never parsed stdin — it
-// keys entirely off env). Read-only: rules file + readonly DB, no writes/http/
-// spawn. Deps injectable (fs / env / cwd / dbPath / requireBetterSqlite3) so the
+// keys entirely off env). Read-only: readonly DB, no writes/http/
+// spawn. Deps injectable (fs / env / dbPath / requireBetterSqlite3) so the
 // active-task branch is unit-testable with a stub DB and no live SQLite (ticket
 // 42c91001). Emits via an `out` sink that replicates console.log's per-line
 // newline exactly. Returns {exitCode:0, stdout?}. SYNC dispatch head (post-
@@ -30,13 +32,12 @@ const DB_PATH = path.join(
 function run(hookData, deps = {}) {
   const _fs = deps.fs || fs;
   const env = deps.env || process.env;
-  // ClarionAssistant tab (ticket 9a731cda): print nothing. The block below re-injects MT rules, an
+  // ClarionAssistant tab (ticket 9a731cda): print nothing. The block below re-injects an
   // MT kanban task and "You are <name>" after compaction; a CA tab is not an MT agent and gets
   // messaging only from this plugin.
   if (isClarionEmbedded(env)) {
     return { exitCode: 0, stdout: '' };
   }
-  const cwd = deps.cwd || process.cwd();
   const dbPath = deps.dbPath || DB_PATH;
   // Lazy default require mirrors the original (resolved inside the try below).
   const requireDb = deps.requireBetterSqlite3
@@ -47,22 +48,10 @@ function run(hookData, deps = {}) {
 
   const terminalName = env.MULTITERMINAL_NAME || '';
 
-  // 1. Re-inject rules
-  try {
-    const rulesPath = path.join(cwd, 'multiterminal-rules.md');
-    if (_fs.existsSync(rulesPath)) {
-      const rules = _fs.readFileSync(rulesPath, 'utf-8').trim();
-      if (rules) {
-        emit('[Post-Compaction Context Re-injection]');
-        emit('');
-        emit(rules);
-        emit('');
-      }
-    }
-  } catch {}
-
-  // 2. Re-inject active task context
+  // 1. Re-inject active task context
   if (terminalName) {
+    emit('[Post-Compaction Context Re-injection]');
+    emit('');
     try {
       // better-sqlite3 via the shared resolver (env → bare → vendor → plugin → APPDATA/npm);
       // drops the fragile ../../mcp-session-history relative path that fails on clean installs (issue #7).
@@ -103,7 +92,7 @@ function run(hookData, deps = {}) {
     } catch {}
   }
 
-  // 3. Remind identity
+  // 2. Remind identity
   if (terminalName) {
     emit(`You are ${terminalName}. Continue working on your active task.`);
   }
