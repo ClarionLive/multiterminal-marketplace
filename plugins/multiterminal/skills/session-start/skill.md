@@ -111,14 +111,14 @@ If `get_my_active_task` returned a task, the agent may be sitting outside the ac
 
 **On task completion (exit):** before marking the task done (which triggers MT's worktree prune), if you entered via `EnterWorktree`, call `ExitWorktree(action="keep")` to return the process cwd to the repo root. This is what lets MT's `git worktree remove` succeed — a shell can't remove its own cwd. Use `"keep"` (not `"remove"`): MT owns the prune, branch merge, and auto-commit; `ExitWorktree` only removes worktrees IT created, and won't touch a path-entered one anyway.
 
-This is the session-start analog of the `task_active_changed` event (delivered natively; full protocol in the plugin CLAUDE.md). Same rules; this one fires once at session boot instead of on every task switch.
+This is the session-start analog of the `task_active_changed` event (delivered natively; its handling is under "MultiTerminal events" in the agent rules the plugin prints at every session start, `agent-rules.md` at the plugin root). Same rules; this one fires once at session boot instead of on every task switch.
 
 ### 3. Brief Greeting + Context Summary
 
 Summarize what the **previous session** was about in 2-3 sentences based on the summary from `get_latest_session`. Lead with what you were *doing* (e.g., "Last session we were fixing the HUD dashboard to filter recent activity by project"). Then mention the active task if relevant.
 
 **Remote-mode status line:** if REMOTE_MODE resolved in step 2, append one line to the greeting:
-- `Remote mode: ON — the owner is away; questions route to their phone (follow the Remote Question Protocol in CLAUDE.md).`
+- `Remote mode: ON — the owner is away; questions route to their phone (ask with ask_owner, per "Asking the Owner" in the agent rules).`
 - `Remote mode: OFF — the owner is at the desk; ask questions in chat as normal.`
 - If REMOTE_MODE is unknown (fetch failed), omit the line — never guess.
 

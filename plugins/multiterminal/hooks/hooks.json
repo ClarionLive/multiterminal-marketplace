@@ -38,6 +38,19 @@
         ]
       },
       {
+        "matcher": "startup|resume|clear|compact",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node",
+            "args": [
+              "${CLAUDE_PLUGIN_ROOT}/hooks/agent-rules-hook.js"
+            ],
+            "timeout": 5
+          }
+        ]
+      },
+      {
         "matcher": "compact",
         "hooks": [
           {

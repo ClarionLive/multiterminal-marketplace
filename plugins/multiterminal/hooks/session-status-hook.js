@@ -1043,30 +1043,13 @@ async function buildStartupPrefetchBlock(ctx, deps = {}) {
   return block;
 }
 
-// The host-controlled behavioral rules (multiterminal-rules.md in the launch folder), printed by both
-// the normal and the quiet SessionStart path. Non-critical: a missing or unreadable file prints nothing.
-function printMultiTerminalRules() {
-  try {
-    const rulesPath = path.join(process.cwd(), 'multiterminal-rules.md');
-    if (fs.existsSync(rulesPath)) {
-      const rulesContent = fs.readFileSync(rulesPath, 'utf-8').trim();
-      if (rulesContent) {
-        console.log(rulesContent);
-        console.log('');
-      }
-    }
-  } catch (_rulesErr) {
-    // Non-critical — never block startup
-  }
-}
-
 // ─── Quiet start (GitHub #34, task e0fa9d90) ───────────────────────────────────────────────────────
 // A project can be set to "Quiet start" in MultiTerminal. Its terminals then only get into their
 // folder and register their identity: no AUTO-RUN of /multiterminal:session-start, no prefetch, no
-// rules, knowledge or kanban injection, no menu, and MT types nothing into the prompt (MT skips its
-// own "initializing..." kick for the same launch). multiterminal-rules.md is deliberately NOT printed:
-// it exists only in the MT repo, and there it tells the agent to check the board at session start,
-// which is exactly what quiet start turns off (pipeline run 1). MT signals it with MULTITERMINAL_QUIET_START='true', set or explicitly cleared at every
+// knowledge or kanban injection, no menu, and MT types nothing into the prompt (MT skips its
+// own "initializing..." kick for the same launch). The universal agent rules still arrive in quiet
+// start, from agent-rules-hook.js (task 9d3404d9), which reuses isQuietStart to end them on "wait for
+// the user". This hook prints no rules in either mode. MT signals it with MULTITERMINAL_QUIET_START='true', set or explicitly cleared at every
 // launch (ConPtyTerminal.BuildQuietStartEnvAssignment). Only that exact value counts, as with
 // MULTITERMINAL_PROJECT_PM, and a spawned helper is never quiet: it must take its first turn to
 // collect its job. MT never sets the flag for a helper; the check here covers an inherited environment.
@@ -1281,9 +1264,9 @@ async function main() {
 
       // Quiet start (GitHub #34): identity, the active-task worktree and session registration, then
       // stop. Also covers /clear in a quiet terminal: no AUTO-RUN and no "initializing..." inject request.
-      // No rules, knowledge or kanban injection (see isQuietStart). The two MT calls run in parallel.
+      // No knowledge or kanban injection (see isQuietStart). The two MT calls run in parallel.
       if (isQuietStart(process.env)) {
-        dtrace('STEP 4q: quiet start, skipping AUTO-RUN, prefetch, rules, knowledge and kanban injection');
+        dtrace('STEP 4q: quiet start, skipping AUTO-RUN, prefetch, knowledge and kanban injection');
         const [registered, worktreePath] = await Promise.all([
           registerQuietSession({ terminalName, sessionId, projectPath: hookData.cwd || process.cwd() }),
           fetchQuietWorktree({ terminalName, projectId: process.env.MULTITERMINAL_PROJECT_ID }),
@@ -1294,7 +1277,7 @@ async function main() {
       }
 
       // CRITICAL: emit the auto-run instruction FIRST so it survives the 2KB hook-output
-      // preview truncation. Everything below (rules, active context, knowledge, kanban)
+      // preview truncation. Everything below (prefetch, knowledge, kanban)
       // can easily push the total past 2KB — if this were at the end it would be lost.
       dtrace('STEP 4: About to emit AUTO-RUN SKILL to stdout');
       console.log('AUTO-RUN SKILL: You MUST run /multiterminal:session-start as your FIRST action before responding to the user. This is mandatory - use the Skill tool with skill="multiterminal:session-start" immediately.');
@@ -1380,8 +1363,9 @@ async function main() {
       console.log(`You are ${terminalName}. Always use "${terminalName}" as your name when registering, claiming tasks, or sending messages.`);
       console.log('');
 
-      // Inject MultiTerminal behavioral rules (host-controlled, replaces MEMORY.md)
-      printMultiTerminalRules();
+      // The agent rules are NOT printed here: they come from agent-rules-hook.js, a separate hook
+      // command with its own 10,000-char output budget (task 9d3404d9). Printed here they were cut
+      // to the 2KB preview whenever this hook's output passed the cap (measured 14.8KB, MT repo).
 
       // ACTIVE-CONTEXT.md injection removed (task 78bcf274, Eval P4).
       // The session-start skill is the single owner of session continuity via
