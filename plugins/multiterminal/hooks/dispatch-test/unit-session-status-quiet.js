@@ -5,8 +5,9 @@
  * MultiTerminal sets MULTITERMINAL_QUIET_START='true' when the project has Quiet start on and the
  * terminal is not a spawned helper. The hook must then print identity, the quiet note and the
  * active-task worktree guidance, and nothing that churns: no AUTO-RUN of /multiterminal:session-start,
- * no prefetch, no multiterminal-rules.md (it tells the agent to check the board at session start), no
- * /clear inject request. It still registers the session. Knowledge and kanban injection are skipped
+ * no prefetch, no /clear inject request. Since task 9d3404d9 this hook prints no rules in EITHER mode
+ * (agent-rules-hook.js does, from the plugin; see unit-agent-rules.js), and it never reads a
+ * multiterminal-rules.md from its cwd: the sentinel below must be absent from every run. It still registers the session. Knowledge and kanban injection are skipped
  * too, but this test cannot see that: with no database (empty APPDATA) neither prints in the control
  * run either.
  *
@@ -21,7 +22,7 @@
  *     multiterminal-rules.md sentinel.
  *
  * Non-vacuity: a CONTROL run with the same environment minus MULTITERMINAL_QUIET_START must print
- * AUTO-RUN and the rules sentinel and attempt the prefetch. That proves the instrument can see what
+ * AUTO-RUN and attempt the prefetch. That proves the instrument can see what
  * the quiet run must not do.
  *
  * FALSIFIED 2026-10-02, expectation stated before each run, restored -> green after each:
@@ -32,6 +33,10 @@
  *      -> red at 'quiet: rules NOT printed'.
  *   3. the get_active_worktree instruction removed from quietStartLines (occurrences counted 1 -> 0)
  *      -> red at 'path -> instruction to enter it'.
+ *   (Falsification 2 predates task 9d3404d9, which removed printMultiTerminalRules entirely.)
+ * FALSIFIED 2026-10-02 for task 9d3404d9 (same script discipline): a console.log of the plugin's
+ *   agent-rules.md added to the normal path -> red at 'control: plugin agent rules NOT printed by
+ *   session-status'.
  */
 const assert = require('assert');
 const fs = require('fs');
@@ -107,7 +112,7 @@ const WT = 'H:\\Repo\\.claude\\worktrees\\e0fa9d90';
   const work = fs.mkdtempSync(path.join(os.tmpdir(), 'mt-e0fa9d90-'));
   const appdata = path.join(work, 'appdata');
   fs.mkdirSync(appdata);
-  // The hook reads multiterminal-rules.md from its cwd; each child runs in `work`.
+  // Each child runs in `work`, which holds a multiterminal-rules.md the hook must NOT read (9d3404d9).
   const RULES_SENTINEL = 'RULES-SENTINEL-e0fa9d90: check the board at session start.';
   fs.writeFileSync(path.join(work, 'multiterminal-rules.md'), `# MultiTerminal Rules\n${RULES_SENTINEL}\n`);
   let n = 0;
@@ -142,7 +147,12 @@ const WT = 'H:\\Repo\\.claude\\worktrees\\e0fa9d90';
     const control = runHook(start, {});
     ok(control.out.includes('AUTO-RUN SKILL'), 'control: AUTO-RUN printed (the instrument can see it)');
     ok(control.trips.includes('/api/remote-mode'), 'control: prefetch attempted (the tripwire can see it)');
-    ok(control.out.includes(RULES_SENTINEL), 'control: rules printed (the rules file is where the hook looks)');
+    ok(!control.out.includes(RULES_SENTINEL), 'control: the cwd rules file is NOT read (task 9d3404d9: rules come from agent-rules-hook)');
+    // The plugin rules must not be printed by THIS hook either: a separate command keeps them out of
+    // this hook's 10,000-char budget (task 9d3404d9). '## MultiTerminal events' is an agent-rules.md heading.
+    ok(fs.readFileSync(path.join(__dirname, '..', '..', 'agent-rules.md'), 'utf8').includes('## MultiTerminal events'),
+      'the agent-rules.md heading used below exists (so the next check is not vacuous)');
+    ok(!control.out.includes('## MultiTerminal events'), 'control: plugin agent rules NOT printed by session-status');
     const controlClear = runHook(clear, {});
     ok(controlClear.trips.includes('/api/terminals/inject'), 'control /clear: inject attempted');
 
