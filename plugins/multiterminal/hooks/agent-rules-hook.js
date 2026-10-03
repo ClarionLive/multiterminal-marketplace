@@ -23,7 +23,10 @@
  * read from the launch folder and so existed only in sessions launched in the MT repo.
  *
  * Silent in a ClarionAssistant tab (messaging only; .claude/rules/ca-embedded-sessions.md) and in
- * a session that is not an MT terminal (no MULTITERMINAL_NAME). Never fails a startup.
+ * a session that is not an MT terminal (no MULTITERMINAL_NAME). Those are the only silences: in an
+ * MT session a missing, unreadable or empty rules file prints one warning (stdout and stderr)
+ * instead, because a session without its rules otherwise looks exactly like a working one.
+ * Never fails a startup (always exit 0).
  */
 const fs = require('fs');
 const path = require('path');
@@ -42,7 +45,14 @@ const QUIET_FOOTER = [
   "Quiet start is on for this project. Nothing above asks you to act before the user speaks: wait for the user's first message and act on that.",
 ];
 
-// Pure apart from the injected fs. Returns { exitCode: 0, stdout }.
+const LOAD_FAILURE_MARK = 'MultiTerminal agent rules could not be loaded';
+
+function loadFailure(reason) {
+  const line = `⚠️ ${LOAD_FAILURE_MARK} (${reason}): the plugin install may be damaged. Tell the Owner.`;
+  return { exitCode: 0, stdout: `${line}\n`, stderr: `${line}\n` };
+}
+
+// Pure apart from the injected fs. Returns { exitCode: 0, stdout, stderr? }.
 function run(hookData, deps = {}) {
   const env = deps.env || process.env;
   const _fs = deps.fs || fs;
@@ -52,10 +62,10 @@ function run(hookData, deps = {}) {
   let rules = '';
   try {
     rules = String(_fs.readFileSync(rulesPath, 'utf-8')).trim();
-  } catch (_e) {
-    return { exitCode: 0, stdout: '' };
+  } catch (e) {
+    return loadFailure(`${(e && e.code) || 'read failed'} reading ${rulesPath}`);
   }
-  if (!rules) return { exitCode: 0, stdout: '' };
+  if (!rules) return loadFailure(`${rulesPath} is empty`);
 
   const source = (hookData && hookData.source) || '';
   // Same conditions session-status-hook uses: a helper takes its first-action branch on any
@@ -70,7 +80,7 @@ function run(hookData, deps = {}) {
   return { exitCode: 0, stdout: out.join('\n') + '\n' };
 }
 
-module.exports = { run, RULES_PATH, RULES_BUDGET_CHARS, HELPER_HEADER, QUIET_FOOTER };
+module.exports = { run, RULES_PATH, RULES_BUDGET_CHARS, HELPER_HEADER, QUIET_FOOTER, LOAD_FAILURE_MARK };
 
 if (require.main === module) {
   (async () => {
@@ -81,6 +91,7 @@ if (require.main === module) {
     let out = { exitCode: 0 };
     try { out = run(hookData); } catch (_e) { out = { exitCode: 0 }; }
     if (out && out.stdout) process.stdout.write(out.stdout);
+    if (out && out.stderr) process.stderr.write(out.stderr);
     process.exit(0);
   })().catch(() => process.exit(0));
 }
