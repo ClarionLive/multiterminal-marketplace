@@ -34,8 +34,8 @@
  * (unit-session-status-quiet.js and unit-session-compact.js record their own 9d3404d9 falsifications.)
  *
  * Added in pipeline run 1 (2026-10-02): the events section keeps the agentName recipient check
- * for task_active_changed (worktree_pruning is decided by cwd: it is broadcast and its agentName is
- * the assignee), and a missing/empty rules file in an MT session prints one warning on stdout and
+ * for task_active_changed (worktree_pruning is decided by cwd: it goes to the task's assignee, helpers
+ * and subagents, and its agentName is the assignee, not necessarily the recipient), and a missing/empty rules file in an MT session prints one warning on stdout and
  * stderr (exit 0); only the CA-tab and no-name exclusions stay silent. Falsified the same way:
  *   F8  the agentName sentence deleted from agent-rules.md -> red at 'task_active_changed: the agentName
  *       recipient check is in its bullet'
@@ -77,8 +77,9 @@ ok(RULES.includes('task_active_changed') && RULES.includes('worktree_pruning'), 
 
 // ── The events section keeps the recipient check (pipeline run 1, security) ──
 // Scoped to the task_active_changed bullet inside "## MultiTerminal events", so a match elsewhere in
-// the file cannot satisfy it. worktree_pruning is deliberately decided by cwd: it is broadcast and its
-// agentName is the task's assignee, not the recipient.
+// the file cannot satisfy it. worktree_pruning is deliberately decided by cwd: it goes to the task's
+// assignee, helpers and subagents (MainForm's eviction audience), and its agentName is the assignee,
+// not necessarily the recipient.
 const eventsStart = RULES.indexOf('## MultiTerminal events');
 const eventsEnd = RULES.indexOf('\n## ', eventsStart + 1);
 const events = RULES.slice(eventsStart, eventsEnd < 0 ? undefined : eventsEnd);
@@ -203,13 +204,15 @@ try {
   fs.cpSync(path.join(__dirname, '..'), path.join(fakePlugin, 'hooks'), { recursive: true, filter: (src) => !src.includes(`${path.sep}dispatch-test`) });
   ok(!fs.existsSync(path.join(fakePlugin, 'agent-rules.md')) && fs.existsSync(path.join(fakePlugin, 'hooks', 'agent-rules-hook.js')),
     'fixture: hook copied, rules file absent');
+  const goneLog = path.join(work, 'tripwire-gone.log');
   const gone = spawnSync(process.execPath, [path.join(fakePlugin, 'hooks', 'agent-rules-hook.js')], {
-    input: JSON.stringify(start('startup')), env: { ...runHookEnv(PANE) }, cwd: work, encoding: 'utf8', timeout: 30000 });
+    input: JSON.stringify(start('startup')), env: runHookEnv(PANE, goneLog), cwd: work, encoding: 'utf8', timeout: 30000 });
   ok(gone.status === 0, `child, rules file absent: exit 0 (got ${gone.status})`);
   ok((gone.stdout || '').includes(LOAD_FAILURE_MARK) && (gone.stdout || '').includes('ENOENT'), `child, rules file absent: warning on stdout (got ${JSON.stringify(gone.stdout)})`);
   ok((gone.stderr || '').includes(LOAD_FAILURE_MARK), 'child, rules file absent: warning on stderr');
   // A safety net, not a claim under test: the hook has no network code, so there is no control run.
-  ok([c, q, h, e, bad].every((x) => x.trips === ''), 'no network attempt from any child');
+  gone.trips = fs.existsSync(goneLog) ? fs.readFileSync(goneLog, 'utf8') : '';
+  ok([c, q, h, e, bad, gone].every((x) => x.trips === ''), 'no network attempt from any child');
   console.log(`  sizes (chars): rules ${RULES.length}, normal ${sizes.normal}, quiet ${sizes.quiet}, helper ${sizes.helper}`);
 } finally {
   fs.rmSync(work, { recursive: true, force: true });
