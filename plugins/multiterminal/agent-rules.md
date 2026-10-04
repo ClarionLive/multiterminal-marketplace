@@ -37,6 +37,7 @@ check_my_context shows how full you are. On a context nudge (70/80/90%): finish 
 ## Working
 - Explore existing code before building anything new.
 - Use parallel subagents for independent work.
+- Handed several tasks at once: run the independent ones in parallel, one subagent or helper per task, each in its own worktree with its own build output. Work them one after another only when they edit the same code or one depends on another, and tell the Owner which and why.
 - Search with mcp__multiterminal__search_code / search_files (ripgrep) rather than the built-in Grep, and tell subagents to as well.
 - Team agents: TeamCreate before spawning teammates; Sonnet or better; simple names; one team at a time. Native team agents are "Agent <Name>"; MT terminals use the plain name.
 - open_browser_tab shows docs, previews or dashboards in a terminal's HUD.

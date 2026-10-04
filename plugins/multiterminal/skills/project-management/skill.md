@@ -102,6 +102,21 @@ Assess task size before entering any workflow:
 
 **Default to SMALL.** Examples: typo fix, button handler, color change = SMALL. New dialog, new endpoint = MEDIUM. New panel, new service layer = LARGE.
 
+**Several tickets at once (Owner rule, 2026-10-04):** when the Owner hands you two or more tickets, size each one, then run the independent ones **in parallel**:
+- **One agent per ticket.** Use a 5.3a subagent with `isolation: "worktree"`, or a 5.3b helper when the 5.3 table calls for one.
+- **Own build output.** Give each agent its own build output folder wherever the build writes to a shared folder (in the MultiTerminal repo, `-p:SharedStagedPath=<per-ticket folder>`), so parallel builds never overwrite each other.
+- **One ticket each, end to end.** Each agent does its ticket's recon, plan, code, tests and commit on its own branch. It never merges, pushes or marks anything done.
+
+A SMALL ticket in the batch still gets its own agent; "do it yourself" applies to a lone SMALL job, not to one of several.
+
+Run tickets **one after another** only when they edit the same code or one depends on another's result, and tell the Owner which tickets and why. When the agents report:
+1. Verify each report against the board and the branch (7.2).
+2. Merge the branches into **one integration branch**.
+3. Run the pipeline.
+4. Hand the Owner one build to deploy and test.
+
+For coordinating a larger program across several PMs or terminals, see `program-management`.
+
 ---
 
 ## Step 0: Session Recap (DISABLED)
