@@ -76,6 +76,84 @@ async function main() {
     console.log('  ✓ T5 advisory stdout accumulates, never blocks/short-circuits');
   }
 
+  // ── T8 (ticket 7f2a6f61): on PreToolUse/PostToolUse/PostToolUseFailure the sync head emits ONE JSON
+  // object carrying the leaves' text as additionalContext. Claude Code drops plain stdout on these
+  // events, and a plain line in front of JSON spoils the JSON (measured headless on 2.1.289). ──
+  {
+    const plain = (text) => async () => ({ exitCode: 0, stdout: text });
+
+    // (a) two plain leaves -> one parseable object, both texts, table order.
+    let r = await dispatch('PostToolUse', 'sync', {}, { PostToolUse: [
+      { name: 'inbox', head: 'sync', run: plain('## Incoming Messages\nfrom Bob') },
+      { name: 'ctx', head: 'sync', run: plain('## Context check\n🔴 Context at 92%\n') },
+    ] });
+    let o = JSON.parse(r.stdout);
+    ok(o.hookSpecificOutput.hookEventName === 'PostToolUse', 'T8a hookEventName is the event');
+    ok(o.hookSpecificOutput.additionalContext === '## Incoming Messages\nfrom Bob\n\n## Context check\n🔴 Context at 92%',
+      'T8a both leaves merged into additionalContext in table order, trailing whitespace trimmed');
+    ok(Object.keys(o).length === 1, 'T8a nothing but hookSpecificOutput is emitted');
+
+    // (b) a silent chain stays silent.
+    r = await dispatch('PostToolUse', 'sync', {}, { PostToolUse: [
+      { name: 'quiet', head: 'sync', run: async () => ({ exitCode: 0 }) },
+      { name: 'blank', head: 'sync', run: plain('   \n') },
+    ] });
+    ok(r.stdout === '', 'T8b no leaf output -> no stdout at all');
+
+    // (c) a leaf that already speaks JSON additionalContext is merged, not nested or prepended.
+    r = await dispatch('PostToolUse', 'sync', {}, { PostToolUse: [
+      { name: 'json-leaf', head: 'sync', run: plain(JSON.stringify({ hookSpecificOutput: { hookEventName: 'PostToolUse', additionalContext: 'from json leaf' } })) },
+      { name: 'plain-leaf', head: 'sync', run: plain('from plain leaf') },
+    ] });
+    o = JSON.parse(r.stdout);
+    ok(o.hookSpecificOutput.additionalContext === 'from json leaf\n\nfrom plain leaf', 'T8c JSON leaf context merged with plain text');
+
+    // (d) a decision with nothing before it goes out byte-for-byte.
+    const deny = JSON.stringify({ hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'deny', permissionDecisionReason: 'no' } });
+    r = await dispatch('PreToolUse', 'sync', {}, { PreToolUse: [
+      { name: 'safety', head: 'sync', run: plain(deny) },
+      { name: 'after', head: 'sync', run: plain('should-not-run') },
+    ] });
+    ok(r.stdout === deny, 'T8d lone decision is emitted unchanged');
+
+    // (e) advice before a decision is merged INTO the decision (old behaviour: "text\n{json}", which
+    // Claude Code could not parse, losing the deny as well).
+    r = await dispatch('PreToolUse', 'sync', {}, { PreToolUse: [
+      { name: 'cache', head: 'sync', run: plain('[Research Cache] Previous research found') },
+      { name: 'safety', head: 'sync', run: plain(deny) },
+    ] });
+    o = JSON.parse(r.stdout);
+    ok(o.hookSpecificOutput.permissionDecision === 'deny', 'T8e the decision survives the merge');
+    ok(o.hookSpecificOutput.permissionDecisionReason === 'no', 'T8e decision fields kept');
+    ok(o.hookSpecificOutput.additionalContext === '[Research Cache] Previous research found', 'T8e earlier advice carried as additionalContext');
+
+    // (e2) a top-level decision (decision:block) gains hookSpecificOutput with the event name.
+    r = await dispatch('PostToolUse', 'sync', {}, { PostToolUse: [
+      { name: 'ctx', head: 'sync', run: plain('ctx line') },
+      { name: 'block', head: 'sync', run: plain(JSON.stringify({ decision: 'block', reason: 'r' })) },
+    ] });
+    o = JSON.parse(r.stdout);
+    ok(o.decision === 'block' && o.reason === 'r', 'T8e2 top-level decision kept');
+    ok(o.hookSpecificOutput.hookEventName === 'PostToolUse' && o.hookSpecificOutput.additionalContext === 'ctx line',
+      'T8e2 advice added under hookSpecificOutput');
+
+    // (f) the merged text is capped below Claude Code's 10,000-character hook output limit.
+    r = await dispatch('PostToolUse', 'sync', {}, { PostToolUse: [
+      { name: 'huge', head: 'sync', run: plain('x'.repeat(20000)) },
+    ] });
+    o = JSON.parse(r.stdout);
+    ok(o.hookSpecificOutput.additionalContext.length <= 9000, 'T8f additionalContext capped at 9000');
+    ok(o.hookSpecificOutput.additionalContext.endsWith('[...truncated: hook output exceeded the context budget]'), 'T8f truncation is marked');
+    ok(r.stdout.length < 10000, 'T8f whole stdout under 10,000 characters');
+
+    // (g) PostToolUseFailure is wrapped too; UserPromptSubmit and Stop are not (plain text works there).
+    r = await dispatch('PostToolUseFailure', 'sync', {}, { PostToolUseFailure: [{ name: 'p', head: 'sync', run: plain('failure note') }] });
+    ok(JSON.parse(r.stdout).hookSpecificOutput.additionalContext === 'failure note', 'T8g PostToolUseFailure wrapped');
+    r = await dispatch('UserPromptSubmit', 'sync', {}, { UserPromptSubmit: [{ name: 'p', head: 'sync', run: plain('plain stays plain') }] });
+    ok(r.stdout === 'plain stays plain', 'T8g UserPromptSubmit left as plain text');
+    console.log('  ✓ T8 tool-event sync output is one JSON object with merged additionalContext');
+  }
+
   // ── T6: hooks.json accounting — census + classification + matcher-parity + bucket-exclusivity ──
   {
     const cfg = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'hooks.json'), 'utf8'));

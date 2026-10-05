@@ -215,6 +215,68 @@ function isDecision(s) {
   }
 }
 
+// Events whose plain stdout Claude Code does NOT give the model (ticket 7f2a6f61). Measured on
+// 2.1.289 with a headless secret-word test: a PostToolUse hook's plain stdout never reached the
+// model, its JSON hookSpecificOutput.additionalContext always did, and UserPromptSubmit plain
+// stdout did. ONE process printing a plain line and then the JSON line delivered NEITHER, so
+// concatenating leaves (what this dispatcher used to do) spoils any JSON a leaf emits. For these
+// events the sync head therefore emits exactly one JSON object. Every other event keeps plain
+// text, which Claude Code already delivers (UserPromptSubmit) or which is a decision (Stop).
+const CONTEXT_JSON_EVENTS = new Set(['PreToolUse', 'PostToolUse', 'PostToolUseFailure']);
+
+// Claude Code caps a hook's output at 10,000 characters; stay under it with room for the JSON.
+const ADDITIONAL_CONTEXT_MAX_CHARS = 9000;
+const TRUNCATION_MARKER = '\n[...truncated: hook output exceeded the context budget]';
+
+function parseObject(s) {
+  try {
+    const o = JSON.parse(s);
+    return o && typeof o === 'object' && !Array.isArray(o) ? o : null;
+  } catch (e) {
+    return null;
+  }
+}
+
+// The text one leaf wants the model to see: the additionalContext of a JSON leaf, or the leaf's
+// stdout as written when it is plain text (or JSON of some other shape, which Claude Code would
+// not have parsed either).
+function adviceOf(stdout) {
+  const o = parseObject(stdout);
+  if (o && o.hookSpecificOutput && typeof o.hookSpecificOutput.additionalContext === 'string') {
+    return o.hookSpecificOutput.additionalContext;
+  }
+  return stdout.replace(/\s+$/, '');
+}
+
+function capAdvice(text) {
+  if (text.length <= ADDITIONAL_CONTEXT_MAX_CHARS) return text;
+  return text.slice(0, ADDITIONAL_CONTEXT_MAX_CHARS - TRUNCATION_MARKER.length) + TRUNCATION_MARKER;
+}
+
+// Builds the single stdout a CONTEXT_JSON_EVENTS sync head emits from what its leaves said.
+// `advice` is the leaves' text in table order; `decision` is the parsed decision object that ended
+// the chain, or null. Returns '' when there is nothing to say, so a silent chain stays silent.
+function buildContextJson(eventName, advice, decision) {
+  const text = advice.filter((a) => a && a.trim()).join('\n\n');
+  if (!decision) {
+    if (!text) return '';
+    return JSON.stringify({
+      hookSpecificOutput: { hookEventName: eventName, additionalContext: capAdvice(text) },
+    });
+  }
+  if (!text) return JSON.stringify(decision);
+  const merged = { ...decision };
+  const hso = { ...(decision.hookSpecificOutput || {}) };
+  if (!hso.hookEventName) hso.hookEventName = eventName;
+  hso.additionalContext = capAdvice(
+    typeof hso.additionalContext === 'string' && hso.additionalContext.trim()
+      ? `${text}\n\n${hso.additionalContext}`
+      : text,
+  );
+  merged.hookSpecificOutput = hso;
+  return JSON.stringify(merged);
+}
+
 // `env` is the session environment the embedded filter reads. It defaults to an EMPTY object, not
 // process.env, so tests that call dispatch() directly stay independent of the ambient environment;
 // the CLI entry (runCli) passes process.env explicitly.
@@ -231,7 +293,9 @@ async function dispatch(eventName, head, hookData, table = TABLE, env = {}) {
   }
 
   // SYNC head: blockers + decision emitters, in table order.
+  const asContextJson = CONTEXT_JSON_EVENTS.has(eventName);
   let stdout = '';
+  const advice = [];
   for (const leaf of leaves) {
     // Table-matcher gate (B′): a matcher-reliant leaf only runs on its tools.
     if (!matcherMatches(leaf, hookData)) continue;
@@ -240,17 +304,27 @@ async function dispatch(eventName, head, hookData, table = TABLE, env = {}) {
     res = res || {};
 
     if (res.exitCode && res.exitCode !== 0) {
-      // Exit-code blocker (task-to-agent exit 2): propagate verbatim, stop the chain.
+      // Exit-code blocker (task-to-agent exit 2): propagate verbatim, stop the chain. Exit 2 shows
+      // stderr, not stdout, so the advice gathered so far is not the deliverable here either way.
       return { exitCode: res.exitCode, stdout, stderr: res.stderr || '' };
     }
     if (res.stdout) {
-      stdout += (stdout ? '\n' : '') + res.stdout;
       if (isDecision(res.stdout)) {
-        // Authoritative permission/stop decision — emit and stop.
+        // Authoritative permission/stop decision — emit and stop. On a context-JSON event the
+        // advice gathered before it is merged INTO the decision rather than prepended as text,
+        // which would make the whole output unparseable and lose the decision too.
+        // With no advice the decision goes out byte-for-byte as the leaf wrote it.
+        if (asContextJson && advice.some((a) => a && a.trim())) {
+          return { exitCode: 0, stdout: buildContextJson(eventName, advice, parseObject(res.stdout)) };
+        }
+        stdout += (stdout ? '\n' : '') + res.stdout;
         return { exitCode: 0, stdout };
       }
+      if (asContextJson) advice.push(adviceOf(res.stdout));
+      else stdout += (stdout ? '\n' : '') + res.stdout;
     }
   }
+  if (asContextJson) return { exitCode: 0, stdout: buildContextJson(eventName, advice, null) };
   return { exitCode: 0, stdout };
 }
 
@@ -284,7 +358,10 @@ async function runCli({ argv = process.argv, env = process.env, readStdin, write
   return exitCode || 0;
 }
 
-module.exports = { dispatch, runCli, selectLeavesForEnv, CA_ALLOWED_LEAVES, TABLE, STANDALONE };
+module.exports = {
+  dispatch, runCli, selectLeavesForEnv, CA_ALLOWED_LEAVES, TABLE, STANDALONE,
+  CONTEXT_JSON_EVENTS, ADDITIONAL_CONTEXT_MAX_CHARS,
+};
 
 if (require.main === module) {
   (async () => {
