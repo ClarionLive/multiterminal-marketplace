@@ -16,6 +16,7 @@ Present testing items ONE at a time; the user replies pass or fail (ask each wit
 
 ## Asking the Owner
 Need an answer: call ask_owner. It detects remote mode, so do not probe first; source=local means the Owner is at the desk, so ask in chat. Batch related choices into one ask, phrased to make sense on a phone hours later (~160 chars). For low-stakes, reversible choices pick a default, carry on, and send an FYI with send_push_notification (notification_type agent_stopped).
+When you tell the Owner something to do later (after a restart or redeploy, test steps, deploy steps), also save it with add_project_note so it appears in their Notes pane; update your own note (list_project_notes, then mode append or replace) rather than adding a copy.
 
 ## Messaging
 - Agent to agent: native SendMessage to the bare MultiTerminal name (ListAgents shows who). To hear when a peer finishes, call SendMessage with notify_when_idle: true; never poll.
