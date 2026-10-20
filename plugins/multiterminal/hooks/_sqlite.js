@@ -12,7 +12,7 @@
  *   3. vendor/ copy bundled with the plugin (the binary shipped alongside hooks).
  *   4. plugin-local node_modules (if the plugin was npm-installed).
  *   5. %APPDATA%\npm\node_modules (Windows global npm — the documented workaround).
- *   6. Node's built-in node:sqlite (Node >= 22.5), wrapped to look like better-sqlite3.
+ *   6. Node's built-in node:sqlite (Node >= 22.13 / 23.4), wrapped to look like better-sqlite3.
  *
  * No hardcoded developer-machine paths. The bundled vendor/ copy (3) is what makes
  * this work out of the box; the installer (#2) is responsible for placing a
@@ -67,7 +67,8 @@ function resolveSqlite(candidates, requireFn, loadFallback) {
 }
 
 /**
- * The node:sqlite DatabaseSync class, or null when this Node has none (< 22.5).
+ * The node:sqlite DatabaseSync class, or null when this Node has none without a flag
+ * (before 22.13 / 23.4 it needs --experimental-sqlite, which hooks are not run with).
  * Node versions where node:sqlite is still experimental print an ExperimentalWarning on
  * first load; that warning is dropped here so it cannot reach a hook's stderr.
  */
@@ -130,8 +131,8 @@ function sqliteUnavailableMessage() {
   return 'MultiTerminal: no SQLite driver could be loaded — DB-backed '
     + 'features (profiles, session lifecycle, activity tracking) are disabled this '
     + 'session. The bundled better-sqlite3 binary did not load (it is built for one '
-    + 'Node ABI/platform) and this Node has no built-in node:sqlite (needs Node 22.5 '
-    + 'or later). Fix: upgrade Node to 22.5+, '
+    + 'Node ABI/platform) and this Node has no built-in node:sqlite (needs Node 22.13 '
+    + 'or later). Fix: upgrade Node to 22.13+, '
     + 'or `npm rebuild better-sqlite3` inside the plugin\'s vendor/node_modules/better-sqlite3 '
     + '(rebuilds for your ABI), '
     + 'or `npm install -g better-sqlite3` + set NODE_PATH, '
