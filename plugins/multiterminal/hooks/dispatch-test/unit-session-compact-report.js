@@ -100,6 +100,9 @@ function ok(cond, msg) { assert.ok(cond, msg); passed++; }
     const leaf = (TABLE.PreCompact || []).find((l) => l.name === 'compact-trigger-hook');
     ok(leaf && leaf.head === 'sync' && leaf.mod === './compact-trigger-hook.js',
       'trigger: routed on the PreCompact SYNC head, so it reaches MT before the compaction runs');
+    const names = (TABLE.PreCompact || []).map((l) => l.name);
+    ok(names.indexOf('compact-trigger-hook') < names.indexOf('session-save-hook'),
+      `trigger: runs before session-save, whose requests can use up the 8s head (order ${names.join(', ')})`);
   }
 
   ok(tripwire.attempts.length === 0, `in-process cases made no network attempt (got ${tripwire.attempts.join('; ')})`);

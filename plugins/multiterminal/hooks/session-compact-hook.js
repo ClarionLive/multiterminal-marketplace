@@ -108,8 +108,10 @@ function run(hookData, deps = {}) {
 // MT armed its pane to continue; this tells MT the compaction finished so it can type the continue
 // prompt once the pane is idle. MT decides: a pane that armed nothing (the Owner's own /compact, an
 // automatic compaction) is a no-op there. The pane is named by MULTITERMINAL_DOC_ID, which MT checks
-// against the pane registered under MULTITERMINAL_NAME. Separate from run() so run() stays
-// read-only. Never throws; resolves within the POST's 3s timeout.
+// against the pane registered under MULTITERMINAL_NAME. Separate from run() so run() stays read-only.
+//
+// postToMt: POST a JSON body to MT's localhost REST API. Shared with compact-trigger-hook.js (the
+// PreCompact leaf). Never throws; resolves with the status code, or null on error or after timeoutMs.
 function postToMt(apiPath, body, timeoutMs = 3000) {
   return new Promise((resolve) => {
     try {

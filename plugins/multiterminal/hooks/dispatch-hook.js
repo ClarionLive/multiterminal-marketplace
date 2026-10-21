@@ -95,12 +95,13 @@ const TABLE = {
     { name: 'session-import-hook', mod: './session-import-hook.js', head: 'sync' },
   ],
   PreCompact: [
-    // session-save self-gates on the event (PreCompact always writes).
-    { name: 'session-save-hook', mod: './session-save-hook.js', head: 'sync' },
     // compact-trigger reports manual vs auto to MultiTerminal (ticket c0ebcfd4): SessionStart(compact)
     // does not say which, and only a manual compaction may claim a compact_my_context continue request.
-    // Sync head, so the report reaches MT before the compaction runs; no stdout.
+    // Sync head, so the report reaches MT before the compaction runs; no stdout. FIRST, because
+    // session-save can spend more than the head's 8s on its own requests and the report would be cut off.
     { name: 'compact-trigger-hook', mod: './compact-trigger-hook.js', head: 'sync' },
+    // session-save self-gates on the event (PreCompact always writes).
+    { name: 'session-save-hook', mod: './session-save-hook.js', head: 'sync' },
   ],
   Stop: [
     { name: 'session-save-hook', mod: './session-save-hook.js', head: 'sync' },
