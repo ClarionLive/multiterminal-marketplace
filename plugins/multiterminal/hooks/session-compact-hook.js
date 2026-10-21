@@ -5,6 +5,9 @@
  * Fires ONLY after context compaction. Re-injects the active task state and
  * identity that would otherwise be lost.
  *
+ * Also reports the finished compaction to MT (reportCompactFinished, ticket c0ebcfd4), so a pane
+ * that compacted itself with compact_my_context is told to continue.
+ *
  * The agent rules are re-injected after compaction by agent-rules-hook.js
  * (matcher includes "compact"), read from the plugin, not from the cwd
  * (task 9d3404d9). This hook used to read multiterminal-rules.md from the
@@ -100,19 +103,69 @@ function run(hookData, deps = {}) {
   return { exitCode: 0, stdout: out.length ? out.join('\n') + '\n' : '' };
 }
 
-module.exports = { run };
+// ── Report the finished compaction to MT (ticket c0ebcfd4) ──────────────
+// A manual /compact ends with no new turn. When an agent compacted itself with compact_my_context,
+// MT armed its pane to continue; this tells MT the compaction finished so it can type the continue
+// prompt once the pane is idle. MT decides: a pane that armed nothing (the Owner's own /compact, an
+// automatic compaction) is a no-op there. The pane is named by MULTITERMINAL_DOC_ID, which MT checks
+// against the pane registered under MULTITERMINAL_NAME. Separate from run() so run() stays
+// read-only. Never throws; resolves within the POST's 3s timeout.
+function postCompactFinished(body) {
+  return new Promise((resolve) => {
+    try {
+      const payload = JSON.stringify(body);
+      const req = http.request({
+        hostname: 'localhost',
+        port: 5050,
+        path: '/api/terminals/compact-finished',
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(payload) },
+        timeout: 3000,
+      }, (res) => { res.on('data', () => {}); res.on('end', () => resolve(res.statusCode)); });
+      req.on('error', () => resolve(null));
+      req.on('timeout', () => { req.destroy(); resolve(null); });
+      req.write(payload);
+      req.end();
+    } catch {
+      resolve(null);
+    }
+  });
+}
+
+async function reportCompactFinished(hookData, deps = {}) {
+  const env = deps.env || process.env;
+  if (isClarionEmbedded(env)) return { posted: false, reason: 'embedded' };
+  const agentName = env.MULTITERMINAL_NAME || '';
+  const docId = env.MULTITERMINAL_DOC_ID || '';
+  if (!agentName || !docId) return { posted: false, reason: 'not an MT pane' };
+  const body = { agentName, docId, sessionId: (hookData && hookData.session_id) || null };
+  const post = deps.post || postCompactFinished;
+  try {
+    const status = await post(body);
+    return { posted: true, body, status };
+  } catch {
+    return { posted: false, reason: 'post failed', body };
+  }
+}
+
+module.exports = { run, reportCompactFinished };
 
 // ── CLI shim (standalone invocation — preserves exact prior behavior) ─
 if (require.main === module) {
   (async () => {
-    // Drain stdin for pipe compatibility (the hook has always ignored its body).
+    // Drain stdin. run() ignores it; reportCompactFinished reads session_id from it (ticket c0ebcfd4).
     let input = '';
     for await (const chunk of process.stdin) {
       input += chunk;
     }
+    let hookData = {};
+    try { hookData = JSON.parse(input || '{}') || {}; } catch { hookData = {}; }
     let out = { exitCode: 0 };
-    try { out = run({}, {}); } catch { out = { exitCode: 0 }; }
+    try { out = run(hookData, {}); } catch { out = { exitCode: 0 }; }
     if (out && out.stdout) process.stdout.write(out.stdout);
+    // After the context is written: MT only types once the pane is idle, so order is not load-bearing,
+    // but a slow MT must never delay the re-injected context.
+    try { await reportCompactFinished(hookData, {}); } catch { /* never fails the hook */ }
     process.exit((out && out.exitCode) || 0);
   })().catch(() => process.exit(0));
 }
