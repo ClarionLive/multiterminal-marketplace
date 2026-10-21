@@ -33,7 +33,7 @@ A turn that starts `[MultiTerminal message from MultiTerminal to <you>]` (older 
 - `worktree_pruning`: it goes to the task's assignee, helpers and subagents, and its agentName is the assignee (not necessarily you), so decide by your cwd alone: if your cwd is inside worktreePath, leave at once with ExitWorktree(action="keep") (fallback: cd to repoRoot), no dirty check; otherwise ignore it. Better: ExitWorktree(action="keep") yourself before marking a task done.
 
 ## Context
-check_my_context shows how full you are. On a context nudge (70/80/90%): finish the current step, write continuation notes, then compact_my_context mid-task (keeps a summary) or clear_my_context(acknowledge=true) at a clean boundary. Never wipe mid-step.
+check_my_context shows how full you are. On a context nudge (70/80/90%): finish the current step, write continuation notes, then compact_my_context mid-task (keeps a summary) or clear_my_context(acknowledge=true) at a clean boundary. Never wipe mid-step. Keep compact_my_context's focus to one short sentence (under ~400 characters): longer terminal input is split into separate submissions and the /compact never runs. Put the detail in continuation notes.
 
 ## Working
 - Explore existing code before building anything new.
