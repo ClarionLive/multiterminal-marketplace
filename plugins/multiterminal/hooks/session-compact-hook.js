@@ -110,17 +110,17 @@ function run(hookData, deps = {}) {
 // automatic compaction) is a no-op there. The pane is named by MULTITERMINAL_DOC_ID, which MT checks
 // against the pane registered under MULTITERMINAL_NAME. Separate from run() so run() stays
 // read-only. Never throws; resolves within the POST's 3s timeout.
-function postCompactFinished(body) {
+function postToMt(apiPath, body, timeoutMs = 3000) {
   return new Promise((resolve) => {
     try {
       const payload = JSON.stringify(body);
       const req = http.request({
         hostname: 'localhost',
         port: 5050,
-        path: '/api/terminals/compact-finished',
+        path: apiPath,
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(payload) },
-        timeout: 3000,
+        timeout: timeoutMs,
       }, (res) => { res.on('data', () => {}); res.on('end', () => resolve(res.statusCode)); });
       req.on('error', () => resolve(null));
       req.on('timeout', () => { req.destroy(); resolve(null); });
@@ -139,7 +139,7 @@ async function reportCompactFinished(hookData, deps = {}) {
   const docId = env.MULTITERMINAL_DOC_ID || '';
   if (!agentName || !docId) return { posted: false, reason: 'not an MT pane' };
   const body = { agentName, docId, sessionId: (hookData && hookData.session_id) || null };
-  const post = deps.post || postCompactFinished;
+  const post = deps.post || ((b) => postToMt('/api/terminals/compact-finished', b));
   try {
     const status = await post(body);
     return { posted: true, body, status };
@@ -148,7 +148,7 @@ async function reportCompactFinished(hookData, deps = {}) {
   }
 }
 
-module.exports = { run, reportCompactFinished };
+module.exports = { run, reportCompactFinished, postToMt };
 
 // ── CLI shim (standalone invocation — preserves exact prior behavior) ─
 if (require.main === module) {

@@ -10,9 +10,14 @@
  * wiring check the in-process cases cannot make): the tripwire records the attempted request to
  * /api/terminals/compact-finished and throws, which the hook swallows.
  *
+ * Also covers compact-trigger-hook.js, the PreCompact leaf that reports manual vs auto, and that the
+ * dispatcher actually routes it (a run()-level case stays green if the table entry is dropped).
+ *
  * FALSIFIED (expectations written before each run): removing the docId guard -> red at
  * 'no docId: no post'; removing the reportCompactFinished call from the CLI shim -> red at
- * 'CLI: one attempt to /api/terminals/compact-finished'. See the MT ticket notes.
+ * 'CLI: one attempt to /api/terminals/compact-finished'; dropping the trigger allow-list -> red at
+ * 'trigger: nothing sent ...'; dropping the TABLE entry -> red at 'trigger: routed ...'.
+ * See the MT ticket notes.
  */
 const tripwire = require('./_net-tripwire.js');
 const assert = require('assert');
@@ -63,6 +68,38 @@ function ok(cond, msg) { assert.ok(cond, msg); passed++; }
   {
     const r = await reportCompactFinished({}, { env: PANE, post: async () => { throw new Error('boom'); } });
     ok(r.posted === false, 'post throws: reported, not thrown');
+  }
+
+  // ── compact-trigger-hook (PreCompact leaf): reports manual vs auto ──────────────
+  const trigger = require('../compact-trigger-hook.js');
+  {
+    const sent = [];
+    const post = async (b) => { sent.push(b); };
+    await trigger.run({ hook_event_name: 'PreCompact', trigger: 'manual' }, { env: PANE, post });
+    await trigger.run({ hook_event_name: 'PreCompact', trigger: 'auto' }, { env: PANE, post });
+    ok(sent.length === 2 && sent[0].trigger === 'manual' && sent[1].trigger === 'auto'
+      && sent[0].agentName === 'Henry' && sent[0].docId === 'doc-123',
+      `trigger: posts name, docId and the trigger (got ${JSON.stringify(sent)})`);
+  }
+  {
+    const sent = [];
+    const post = async (b) => { sent.push(b); };
+    await trigger.run({ hook_event_name: 'PreCompact' }, { env: PANE, post });
+    await trigger.run({ hook_event_name: 'PreCompact', trigger: 'weird' }, { env: PANE, post });
+    await trigger.run({ hook_event_name: 'Stop', trigger: 'manual' }, { env: PANE, post });
+    await trigger.run({ hook_event_name: 'PreCompact', trigger: 'manual' }, { env: { MULTITERMINAL_NAME: 'Henry' }, post });
+    await trigger.run({ hook_event_name: 'PreCompact', trigger: 'manual' }, { env: { ...PANE, CLARION_ASSISTANT_EMBEDDED: '1' }, post });
+    ok(sent.length === 0, `trigger: nothing sent without a known trigger, off PreCompact, without a docId, or embedded (got ${JSON.stringify(sent)})`);
+  }
+  {
+    const r = await trigger.run({ hook_event_name: 'PreCompact', trigger: 'manual' }, { env: PANE, post: async () => { throw new Error('boom'); } });
+    ok(r.exitCode === 0 && !r.stdout, 'trigger: a failing post exits 0 with no stdout');
+  }
+  {
+    const { TABLE } = require('../dispatch-hook.js');
+    const leaf = (TABLE.PreCompact || []).find((l) => l.name === 'compact-trigger-hook');
+    ok(leaf && leaf.head === 'sync' && leaf.mod === './compact-trigger-hook.js',
+      'trigger: routed on the PreCompact SYNC head, so it reaches MT before the compaction runs');
   }
 
   ok(tripwire.attempts.length === 0, `in-process cases made no network attempt (got ${tripwire.attempts.join('; ')})`);
