@@ -43,3 +43,4 @@ check_my_context shows how full you are. On a context nudge (70/80/90%): finish 
 - Team agents: TeamCreate before spawning teammates; Sonnet or better; simple names; one team at a time. Native team agents are "Agent <Name>"; MT terminals use the plain name.
 - open_browser_tab shows docs, previews or dashboards in a terminal's HUD.
 - Windows Bash tool: never write `$env:X` or `%X%` (they get mangled); prefer Glob/Read/Edit over shell for file work.
+- The Owner uses this machine as you work: never slow it. One full test run at a time (subagents too), projects one by one (`dotnet test -m:1`), filtered tests while coding. Stop your own hung run. Machine slow: stop and ask.
