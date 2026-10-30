@@ -1142,7 +1142,7 @@ function readPrefetchScope(env, pmLines) {
       out.projectId = scope.id;
       out.scopeDegraded = scope.degraded;
       if (isPm) {
-        const row = db.prepare('SELECT name FROM projects WHERE id = ?').get(env.MULTITERMINAL_PROJECT_ID);
+        const row = db.prepare('SELECT name FROM projects WHERE id = ?').get(env.MULTITERMINAL_PROJECT_ID ?? null);
         out.projectName = row && row.name ? String(row.name) : null;
       }
     } finally {
