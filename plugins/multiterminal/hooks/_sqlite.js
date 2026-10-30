@@ -90,29 +90,90 @@ function loadNodeSqlite() {
 
 /**
  * Wraps DatabaseSync in the slice of the better-sqlite3 API the hooks use:
- * `new Database(file, { readonly })`, `prepare(sql).run/get/all`, `exec`, `close`.
- * Statements are node:sqlite's own; their run/get/all already match (run returns
- * { changes, lastInsertRowid }, get returns undefined on no row, bare named parameters
- * bind @name/:name/$name).
+ * `new Database(file, { readonly })`, `prepare(sql).run/get/all/iterate`, `exec`, `pragma`,
+ * `transaction`, `close`. run returns { changes, lastInsertRowid }, get returns undefined on
+ * no row, and bare named parameters bind @name/:name/$name, as in better-sqlite3.
+ *
+ * Statements are wrapped for one difference: better-sqlite3 binds undefined as NULL, while
+ * node:sqlite (at least through Node 24) throws "Provided value cannot be bound". Hooks bind
+ * env vars and stdin fields that can be unset, so every bind maps undefined to null here
+ * rather than relying on each call site to remember `?? null`.
  */
 function createNodeSqliteDatabase(DatabaseSync) {
+  const toBindable = (v) => (v === undefined ? null : v);
+  const isPlainObject = (v) => v !== null && typeof v === 'object'
+    && (Object.getPrototypeOf(v) === Object.prototype || Object.getPrototypeOf(v) === null);
+  const bindArgs = (args) => args.map((a) => {
+    if (!isPlainObject(a)) return toBindable(a);
+    const named = {};
+    for (const k of Object.keys(a)) named[k] = toBindable(a[k]);
+    return named;
+  });
+
+  class Statement {
+    constructor(stmt) { this._stmt = stmt; }
+    run(...args) { return this._stmt.run(...bindArgs(args)); }
+    get(...args) { return this._stmt.get(...bindArgs(args)); }
+    all(...args) { return this._stmt.all(...bindArgs(args)); }
+    iterate(...args) { return this._stmt.iterate(...bindArgs(args)); }
+  }
+
   class Database {
     constructor(filename, options = {}) {
-      this._db = new DatabaseSync(filename, {
-        readOnly: !!options.readonly,
-        // better-sqlite3 waits up to 5s on a locked database; node:sqlite defaults to 0 and
-        // would fail at once with SQLITE_BUSY while MultiTerminal is writing.
-        timeout: options.timeout != null ? options.timeout : 5000,
-      });
+      this._db = new DatabaseSync(filename, { readOnly: !!options.readonly });
+      this._txDepth = 0;
+      // better-sqlite3 waits up to 5s on a locked database; node:sqlite defaults to 0 and
+      // would fail at once with SQLITE_BUSY while MultiTerminal is writing. Set by PRAGMA, not
+      // the constructor's `timeout` option, which only exists from Node 22.16 / 24.0 and is
+      // silently ignored on 22.13-22.15.
+      const timeout = options.timeout != null ? options.timeout : 5000;
+      this._db.exec(`PRAGMA busy_timeout = ${Math.max(0, Math.floor(Number(timeout)) || 0)}`);
     }
 
     prepare(sql) {
-      return this._db.prepare(sql);
+      return new Statement(this._db.prepare(sql));
     }
 
     exec(sql) {
       this._db.exec(sql);
       return this;
+    }
+
+    // better-sqlite3 shape: every result row, or with { simple: true } the first column of
+    // the first row (undefined when there is none).
+    pragma(source, options = {}) {
+      const stmt = this._db.prepare(`PRAGMA ${source}`);
+      if (options.simple) {
+        const row = stmt.get();
+        return row ? Object.values(row)[0] : undefined;
+      }
+      return stmt.all();
+    }
+
+    // better-sqlite3 shape: returns a function that runs fn inside BEGIN/COMMIT, rolls back
+    // and rethrows on error. A call made inside another transaction function nests as a
+    // SAVEPOINT, as better-sqlite3 does. Not covered: the .deferred/.immediate/.exclusive
+    // variants and better-sqlite3's refusal of async functions; no hook uses either.
+    transaction(fn) {
+      const db = this;
+      return function (...args) {
+        const outer = db._txDepth === 0;
+        const savepoint = `mt_tx_${db._txDepth}`;
+        db._db.exec(outer ? 'BEGIN' : `SAVEPOINT ${savepoint}`);
+        db._txDepth++;
+        try {
+          const result = fn.apply(this, args);
+          db._txDepth--;
+          db._db.exec(outer ? 'COMMIT' : `RELEASE ${savepoint}`);
+          return result;
+        } catch (e) {
+          db._txDepth--;
+          try {
+            db._db.exec(outer ? 'ROLLBACK' : `ROLLBACK TO ${savepoint}; RELEASE ${savepoint}`);
+          } catch (_rollbackError) { /* keep the original error */ }
+          throw e;
+        }
+      };
     }
 
     close() {

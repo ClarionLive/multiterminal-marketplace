@@ -80,6 +80,53 @@ function main() {
     assert.strictEqual(r.prepare('SELECT 1 FROM activity_feed WHERE id = ?').get(99), undefined, 'get() miss is undefined');
     assert.throws(() => r.prepare("INSERT INTO activity_feed (timestamp, activity_type, summary) VALUES ('x','y','z')").run(),
       /readonly/i, 'readonly: true is enforced');
+
+    // busy_timeout is set by PRAGMA, so it holds on 22.13-22.15 too, where DatabaseSync has no
+    // `timeout` option and a locked database would fail at once instead of waiting.
+    assert.strictEqual(r.pragma('busy_timeout', { simple: true }), 5000, 'default busy_timeout is 5000ms');
+    assert.strictEqual(track(new Database(file, { timeout: 1234 })).pragma('busy_timeout', { simple: true }), 1234,
+      'an explicit timeout option sets busy_timeout');
+
+    // pragma(), as session-status-hook.js uses it for the Project Knowledge block: the setter
+    // form, then the rows form and the { simple: true } form, both better-sqlite3 shapes.
+    const k = track(new Database(file));
+    const setRows = k.pragma('busy_timeout = 2000');
+    assert.ok(Array.isArray(setRows), 'pragma() without simple returns an array of rows');
+    assert.strictEqual(setRows[0].timeout, 2000, 'pragma() setter row carries the new value');
+    assert.strictEqual(k.pragma('busy_timeout', { simple: true }), 2000, 'pragma() simple returns the first column');
+
+    // transaction(): the reference-count bump in session-status-hook.js.
+    k.exec('CREATE TABLE knowledge_entries (id INTEGER PRIMARY KEY, reference_count INTEGER NOT NULL DEFAULT 0)');
+    k.exec('INSERT INTO knowledge_entries (id) VALUES (1), (2)');
+    const bumpStmt = k.prepare('UPDATE knowledge_entries SET reference_count = reference_count + 1 WHERE id = ?');
+    const bumpAll = k.transaction((entries) => { for (const e of entries) bumpStmt.run(e.id); return entries.length; });
+    assert.strictEqual(bumpAll([{ id: 1 }, { id: 2 }]), 2, 'transaction function returns fn\'s result');
+    const counts = () => k.prepare('SELECT reference_count AS c FROM knowledge_entries ORDER BY id').all().map((x) => x.c);
+    assert.deepStrictEqual(counts(), [1, 1], 'transaction commits');
+    const failing = k.transaction(() => { bumpStmt.run(1); throw new Error('boom'); });
+    assert.throws(() => failing(), /boom/, 'transaction rethrows fn\'s error');
+    assert.deepStrictEqual(counts(), [1, 1], 'transaction rolls back on error');
+    // Nested: an inner failure caught by the outer function undoes only the inner work.
+    // The caught message is checked so a nested BEGIN failing for its own reason cannot pass.
+    const inner = k.transaction(() => { bumpStmt.run(2); throw new Error('inner'); });
+    let caught;
+    const outer = k.transaction(() => { bumpStmt.run(1); try { inner(); } catch (e) { caught = e.message; } });
+    outer();
+    assert.strictEqual(caught, 'inner', 'the nested call failed with fn\'s own error');
+    assert.deepStrictEqual(counts(), [2, 1], 'nested transaction rolls back to its savepoint only');
+    const innerOk = k.transaction(() => bumpStmt.run(2));
+    k.transaction(() => { bumpStmt.run(1); innerOk(); })();
+    assert.deepStrictEqual(counts(), [3, 2], 'a nested transaction that succeeds commits with the outer one');
+    assert.doesNotThrow(() => k.exec('BEGIN; COMMIT'), 'no transaction is left open');
+
+    // Unset binds become NULL, as in better-sqlite3 (node:sqlite throws on undefined). This is
+    // session-status-hook.js binding env.MULTITERMINAL_PROJECT_ID when the env var is unset.
+    assert.strictEqual(k.prepare('SELECT ? IS NULL AS n').get(undefined).n, 1, 'undefined positional binds NULL');
+    assert.strictEqual(k.prepare('SELECT @p IS NULL AS n').get({ p: undefined }).n, 1, 'undefined named binds NULL');
+    k.prepare('INSERT INTO activity_feed (timestamp, activity_type, actor, summary) VALUES (?, ?, ?, ?)')
+      .run('2026-10-20T08:51:02Z', 'TURN_END', undefined, 'unset actor');
+    assert.strictEqual(k.prepare('SELECT actor FROM activity_feed WHERE summary = ?').get('unset actor').actor, null,
+      'run() with an undefined value writes NULL');
   } finally {
     // Close before deleting, and never let cleanup replace an assertion failure: Windows
     // refuses to delete an open database, and that EPERM would hide the real message.
